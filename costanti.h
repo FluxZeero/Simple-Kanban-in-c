@@ -4,6 +4,8 @@
 #define DIM_TESTO 512
 #define MAX_UTENTI 10
 #define MAX_CARDS 100
+#define MAX_MSG 512
+#define MAX_CAMPI 10
 
 #define TO_DO 1
 #define DOING 2
