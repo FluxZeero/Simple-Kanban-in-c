@@ -33,12 +33,12 @@ struct_card cards[MAX_CARDS];
 
 int utenti_attivi = 0;
 int utenti_registrati = 0;
-
+int numero_card = 0;
 fd_set fd_lettura; //selezine degli utenti da cui mi aspetto di leggere
 fd_set fd_temp; // temporaneo, utilizzato per salvare il contenuto di fd_lettura prima dell'uso di select
 int max_fd = 0;
 
-const char *testi_iniziali[15] = {
+const char *testi_iniziali[MAX_INIT_CARDS] = {
     "Implementare integrazione per il pagamento",
     "Diagramma delle classi UML",
     "Studio dei requisiti dell'applicazione",
@@ -58,7 +58,6 @@ const char *testi_iniziali[15] = {
 
 /* =========================================== Funzioni di supporto =========================================== */
 
-
 void init_utenti(){
     
     for(int i = 0; i < MAX_UTENTI; i++){
@@ -66,21 +65,63 @@ void init_utenti(){
         utenti[i].socket = -1;
         utenti[i].porta = 0;
     }
+
     return;
 }
 
 void init_cards(){
-    for (int i = 0; i < 15; i++){
+
+    for (int i = 0; i < MAX_INIT_CARDS; i++){
         cards[i].id = i;
         cards[i].porta_utente = -1; // non assegnata
         cards[i].stato = TO_DO;
         strcpy(cards[i].testo,testi_iniziali[i]);
         cards[i].testo[DIM_TESTO - 1] = '\0';
         time(&cards[i].timestamp);
+        numero_card ++;
     }
+    
+    return;
 }
 
+// dato un socket di un utente trova l'indice corrispondente nel vettore utenti ritorna -1 se non esiste
+int trova_indice_da_socket(int socket){
+    
+    int ret = -1;
+    int i = 0;
+    
+    while (i < MAX_UTENTI){
+        if(utenti[i].socket == socket){
+            ret = i;
+            break;
+        } else {
+            i++;
+        }
+    }
+
+    return ret;
+}
+
+//data la porta di un utente rimuove tutte le card assegnate e le rimette nella colonna TO_DO
+void rimuovi_card_utente(int porta){
+
+    for (int i = 0; i < numero_card; i++){
+        if(cards[i].porta_utente == porta && cards[i].stato == DOING){
+            cards[i].stato = TO_DO;
+            cards[i].porta_utente = -1;
+            time(&cards[i].timestamp);
+        }
+    }
+
+    return;
+}
+
+/* =========================================== Funzionalità del progetto =========================================== */
+
+
+
 void hello_handler(int socket_utente,char porta[MAX_MSG]){
+    
     int i = 0;
     while(utenti[i].socket != socket_utente && i < MAX_UTENTI){
         i++;
@@ -102,10 +143,7 @@ void create_card_handler(int ID, int colonna, char* testo){
     return;
 }
 
-void rimuovi_card_utente(int socket){
-    
-    return;
-}
+
 
 
 /* ================================================= Main ================================================== */
@@ -114,6 +152,7 @@ int main(){
     // azzero i set
     FD_ZERO(&fd_lettura);
     FD_ZERO(&fd_temp);
+
     char BUFFER_IN[DIM_BUFFER];
     char BUFFER_OUT[DIM_BUFFER];
     memset(BUFFER_IN,0,DIM_BUFFER);
@@ -203,13 +242,20 @@ int main(){
                 // gestione del dato
                     memset(BUFFER_IN,0,DIM_BUFFER);
                     int n = recv(i,BUFFER_IN,DIM_BUFFER - 1,0);
-                    BUFFER_IN[DIM_BUFFER - 1] = '\0';
+                    BUFFER_IN[n] = '\0';
                     if(n == 0){
                         // chiusura della connessione forzata senza quit
-                        utenti[i].attivo = 0;
-                        utenti[i].socket = 0;
+                        int k = trova_indice_da_socket(i);
+                        if (k<0){
+                            perror("impossibile trovare l'indice corrispondente al socket per la gestione del comando \n");
+                            exit(1);
+                        }
+                        utenti[k].attivo = 0;
+                        utenti[k].socket = 0;
+                        rimuovi_card_utente(utenti[k].porta);
+                        utenti[k].porta = 0;
                         FD_CLR(i,&fd_lettura);
-                        rimuovi_card_utente(i);
+
                     } 
 
                     else if (n < 0) {
@@ -239,6 +285,10 @@ int main(){
                             int id = atoi(campo[1]);
                             int colonna = atoi(campo[2]);
                             create_card_handler(id,colonna,campo[3]);
+                        }
+
+                        else if (strcmp(campo[0],"QUIT")){
+                            
                         }
 
                         else {
