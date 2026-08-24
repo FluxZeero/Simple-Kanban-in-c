@@ -13,15 +13,15 @@
 /* ============================================ Strutture Dati ============================================ */
 
 typedef struct {
-    int porta;    /* porta dell'utente (il suo "nome") se è 0 non si è registrato*/
+    int porta;    /* porta dell'utente se è 0 non si è registrato*/
     int socket;   /* socket TCP su cui gli parlo */
     int attivo;   /* 1 = presente, 0 = slot libero */
 } struct_utenti;
 
 typedef struct {
-    int id;
+    int id; 
     char testo[DIM_TESTO];
-    int porta_utente;
+    int porta_utente; // -1 = non assegnata a nessun utente
     int stato; // -1 non valid
     time_t timestamp;
 } struct_card;
@@ -123,7 +123,7 @@ void rimuovi_card_utente(int porta){
 void hello_handler(int socket_utente,char porta[MAX_MSG]){
     
     int i = 0;
-    while(utenti[i].socket != socket_utente && i < MAX_UTENTI){
+    while( i < MAX_UTENTI && utenti[i].socket != socket_utente ){
         i++;
     }
 
@@ -250,12 +250,19 @@ int main(){
                             perror("impossibile trovare l'indice corrispondente al socket per la gestione del comando \n");
                             exit(1);
                         }
+
                         utenti[k].attivo = 0;
                         utenti[k].socket = 0;
-                        rimuovi_card_utente(utenti[k].porta);
-                        utenti[k].porta = 0;
-                        FD_CLR(i,&fd_lettura);
 
+                        rimuovi_card_utente(utenti[k].porta);
+                        if(utenti[k].porta != 0){
+                            utenti_registrati --;
+                        }
+                        utenti[k].porta = 0;
+                        
+                        FD_CLR(i,&fd_lettura);
+                        close(i);
+                        utenti_attivi --;
                     } 
 
                     else if (n < 0) {
@@ -267,6 +274,7 @@ int main(){
                         // servo la richiesta
 
                         // implementazione in c di split()
+                        
                         char *campo[MAX_CAMPI];
                         int n_campi = 0;
 
@@ -276,6 +284,8 @@ int main(){
                             n_campi++;
                             token = strtok(NULL, "|");
                         }
+
+                        // in base al comando ricevuto chiamo una funzione handler diversa
 
                         if(strcmp(campo[0],"HELLO") == 0 && n_campi == 2){
                             hello_handler(i,campo[1]);
@@ -291,8 +301,9 @@ int main(){
                             
                         }
 
+                        // se nessun comando ha rispettato il formato comunico al client l'errore
                         else {
-                            printf("ricevuto comando non valido: %s",BUFFER_IN);
+                            printf("ricevuto comando non valido/non esistente: %s",BUFFER_IN);
                         }
                     }
 
@@ -305,29 +316,3 @@ int main(){
 
     return 0;
 }
-
-
-/* DA RIMUOVERE -> Parte di setup iniziale "Hello server"
-
-    // mi metto in ascolto delle richieste scon il socket, posso avere un massimo di richieste in coda
-    int ret = listen(socket_ascolto,10); 
-    if(ret < 0){
-        perror("impossibile effettuare listen \n");
-    }
-
-    struct sockaddr_in ind_utente;
-    int len = sizeof(ind_utente);
-    int socket_client = accept(socket_ascolto, (struct sockaddr*)&ind_utente, &len); 
-
-    // mi passa il socket della conversazione e inizializza la struttura che gli ho passato con i dati dell'utente
-    // adesso ho accettato la connessione dal client e adesso posso mettermi a ricevere la roba 
-    
-    char buffer[1024];
-    int n = recv(socket_client, buffer, sizeof(buffer) - 1, 0);
-    //ho ricevuto dal socket_client, nel buffer, un messaggio di dimensione che io prefisso, con flag 0
-    buffer[n] = '\0'; // metto la marca di fine stringa per stampare e utilizzare il buffer come una stringa, se il messaggio dell'utente è troppo lungo ce la devo mettere io
-
-    printf("ricevuto %s \n",buffer);
-    //chiudo le connessioni
-
-*/
