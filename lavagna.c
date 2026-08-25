@@ -316,7 +316,6 @@ void handle_card(){
 
 }
 
-
 /* la funzione termina la connnessione con il client, rimuove le card dell'utente 
     e la riassegna ad un utente se è libero
 */
@@ -350,6 +349,98 @@ void quit_handler(int socket){
     return;
 }
 
+void show_lavagna(){
+
+    int temp = numero_card;
+    printf("\n    _____________________________________________________________________________________________\n");
+    printf("   /                                                                                            /|\n");
+    printf("  /                                                                                            / |\n");
+    printf(" /                                                                                            /  |\n");
+    printf("|============================================================================================|   |\n");
+    printf("|                                                                                            |   |\n");
+    printf("|                                          LAVAGNA                                           |   |\n");
+    printf("|                                                                                            |   |\n");
+    printf("|============================================================================================|   |\n");
+    printf("|_____________TO_DO_________________________DOING___________________________DONE_____________|   |\n");
+    printf("|                              |                              |                              |   |\n");
+
+    int n_todo, n_doing, n_done = 0;
+    // conto le card da mettere in ogni colonna
+    for(int i = 0; i < MAX_CARDS; i++){
+        if(cards[i].stato == -1){
+            continue;
+        }
+        switch(cards[i].stato){
+            case 1:
+                n_todo++;
+            case 2:
+                n_doing++;
+            case 3:
+                n_done++;
+            case 4:
+                n_todo++;
+        }
+    }
+
+    while(numero_card > 0){
+        /* genero 
+          se il testo sfora allora taglio la riga
+        */
+       if(n_todo == 0){
+        // aggiungo una riga vuota |______________________________
+       } else {
+
+       }
+    }
+
+    printf("|______________________________|______________________________|______________________________|   |\n");
+    printf("|                                                                                            |  /\n");
+    printf("|                                                                                            | / \n");
+    printf("|____________________________________________________________________________________________|/  \n");
+    return;
+}
+
+// manda la lista delle porte all'utente identificato con socket
+void user_list_handler(int socket){
+    
+    // preparo il messaggio
+    memset(BUFFER_OUT,0,DIM_BUFFER);
+    int offset = 0;
+
+    for(int i = 0; i < MAX_UTENTI; i++){
+        if(utenti[i].porta == 0){
+            continue;
+        }
+
+        offset += sprintf(BUFFER_OUT + offset,"%d,",utenti[i].porta);
+    }
+
+    if(offset > 0){
+        BUFFER_OUT[offset - 1] = '\0';
+    }
+
+    if(socket == STDIN_FILENO){
+        printf("Lista utenti: %s \n",BUFFER_OUT);
+        return;
+    }
+
+    // invio il messaggio
+    int size = strlen(BUFFER_OUT);
+    int n = send(socket,BUFFER_OUT,size,0);
+
+    if (n < 0){
+        printf("errore nell'invio del messaggio nella richiesta: user_list_handler \n");
+    } else {
+        printf("inviate le porte degli utenti al socket: %d",socket);
+    }
+
+    return;
+}
+
+void ping_user(){
+    return;
+}
+
 // in base al comando ricevuto chiamo l'handler corretto per la gestione della richiesta
 void call_handler(int socket_utente, char *campo[MAX_CAMPI], int n_campi){
     
@@ -373,12 +464,19 @@ void call_handler(int socket_utente, char *campo[MAX_CAMPI], int n_campi){
         handle_card();
     }
 
+    else if (strcmp(campo[0],"SEND_USER_LIST") == 0){
+        user_list_handler(socket_utente);
+    }
+
+    else if (strcmp(campo[0],"SHOW_LAVAGNA") == 0){
+        show_lavagna();
+    }
+
     // se nessun comando ha rispettato il formato comunico al client l'errore
     else {
         printf("ricevuto comando non valido/non esistente: %s , n_campi: %d, socket chiamante %d \n",BUFFER_IN,n_campi, socket_utente);
     }
 }
-
 
 /* ================================================= Main ================================================== */
 int main(){
@@ -419,7 +517,8 @@ int main(){
         exit(1);
     };
 
-    printf("Lavagna online alla porta %d. Operazioni possibili | HELLO + numero_porta | CREATE_CARD + ID + COLONNA + TESTO_ATTIVITà |\n",PORTA_LAVAGNA);
+    show_lavagna();
+    printf("Lavagna online alla porta %d. \n Operazioni possibili | HELLO + numero_porta | CREATE_CARD + ID + COLONNA + TESTO_ATTIVITà | SHOW_LAVAGNA | SEND_USERS_LIST |\n",PORTA_LAVAGNA);
 
     // ciclo infinito che inizia mettendosi in attesa di una richiesta da un descrittore che ha ricevuto dati
     // DA IMPLEMENTARE: GESTIONE DEI COMANDI DA TASTIERA 
@@ -514,12 +613,9 @@ int main(){
                         int n_campi = parse_msg(campo, BUFFER_IN, MAX_CAMPI, sep);
 
                         call_handler(i, campo, n_campi);
-
                     }
-
-                    
                 }
-           }
+            }
         }
     }
     close(socket_ascolto);
