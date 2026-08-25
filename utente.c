@@ -87,7 +87,8 @@ int main(int argc, char* argv[]){
         } else {
             max_fd = socket_lavagna;
         }
-            select(max_fd,&fd_lettura,NULL,NULL,NULL);
+        
+        select(max_fd,&fd_lettura,NULL,NULL,NULL);
 
         }
 

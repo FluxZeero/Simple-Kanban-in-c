@@ -1,0 +1,13 @@
+=== RISULTATI ===
+OK  - HELLO singolo
+OK  - Doppio HELLO gestito senza crash
+OK  - QUIT disconnette correttamente
+OK  - CREATE_CARD normale
+OK  - CREATE_CARD testo lungo (tronca, non crasha)
+OK  - Messaggio solo delimitatori
+OK  - Comando sconosciuto non disconnette
+OK  - Server ancora reattivo dopo tutto lo stress
+--- LAVAGNA ANCORA VIVA (nessun crash in tutta la batteria) ---
+
+=== Registrazione in ordine NON crescente (5685, 5679, 5682) ===
+=== CREATE_CARD con '|' dentro il testo, poi un nuovo utente che triggera handle_card ===

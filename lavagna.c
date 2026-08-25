@@ -31,9 +31,14 @@ typedef struct {
 struct_utenti utenti[MAX_UTENTI];
 struct_card cards[MAX_CARDS];
 
+char BUFFER_IN[DIM_BUFFER];
+char BUFFER_OUT[DIM_BUFFER];
+
 int utenti_attivi = 0;
 int utenti_registrati = 0;
 int numero_card = 0;
+int assigned_card = 0;
+
 fd_set fd_lettura; //selezine degli utenti da cui mi aspetto di leggere
 fd_set fd_temp; // temporaneo, utilizzato per salvare il contenuto di fd_lettura prima dell'uso di select
 int max_fd = 0;
@@ -57,6 +62,8 @@ const char *testi_iniziali[MAX_INIT_CARDS] = {
 };
 
 /* =========================================== Funzioni di supporto =========================================== */
+
+void handle_card();
 
 void init_utenti(){
     
@@ -110,11 +117,37 @@ void rimuovi_card_utente(int porta){
             cards[i].stato = TO_DO;
             cards[i].porta_utente = -1;
             time(&cards[i].timestamp);
+            assigned_card --;
+
+            // la card viene riassegnata se ci sono utenti liberi
+            if(assigned_card < utenti_registrati){
+                handle_card();
+            }
         }
     }
 
     return;
 }
+
+void sort_utenti(){
+    
+    int scambiati = 1;
+
+    while (scambiati){
+        scambiati = 0;
+        for(int i = 0; i < MAX_UTENTI - 1; i++){
+            if(utenti[i].porta > utenti[i + 1].porta){
+                struct_utenti temp = utenti[i];
+                utenti[i] = utenti[i + 1];
+                utenti[i + 1] = temp;
+                scambiati = 1;
+            }
+        }
+    }
+
+}
+
+
 
 /* =========================================== Funzionalità del progetto =========================================== */
 
@@ -132,18 +165,140 @@ void hello_handler(int socket_utente,char porta[MAX_MSG]){
         exit(1);
     }
 
+    if(utenti[i].porta != 0){
+        printf("un utente ha provato a registrarsi due volte, il comando non ha effettuato modifiche \n");
+        return;
+    }
+
     int intporta = atoi(porta);
     utenti[i].porta = intporta;
     utenti_registrati++;
     printf("Registrato utente con porta: %s \n", porta);
+
+    handle_card();
+
     return;
 }
 
-void create_card_handler(int ID, int colonna, char* testo){
+void create_card_handler(int ID, int colonna, char* testo, int dim_testo){
+    if(numero_card >= MAX_CARDS){
+        printf("impossibile creare la card: limite massimo raggiunti\n");
+        return;
+    }
+
+    if (dim_testo > DIM_TESTO - 1){
+        dim_testo = DIM_TESTO- 1;
+    }
+
+    int i = numero_card;
+    cards[i].id = ID;
+    cards[i].stato = colonna;
+    cards[i].porta_utente = -1;
+    strncpy(cards[i].testo, testo, dim_testo);
+    time(&cards[i].timestamp);
+
+    numero_card ++;
+
+    printf("Creata nuova card: ID = %d, testo: %s\n",ID, cards[i].testo);
+
     return;
 }
 
+/* assegna le card in ordine crescente di porta, verifica se ha una card attiva altrimenti gliela assegna e aspetta l'ack*/
+void handle_card(){
 
+    sort_utenti();
+    
+    for(int i = 0; i < MAX_UTENTI; i++){
+
+        // verifico se l'utente è registrato
+        if(utenti[i].porta == 0){
+            continue;
+        }
+
+        // verifico se ha già una card assegnata
+        int assegnata = 0;
+        for(int j = 0; j < MAX_CARDS; j++){
+            if(utenti[i].porta == cards[j].porta_utente){
+                assegnata = 1;
+                break;
+            }
+        }
+        if(assegnata == 1){
+            continue;
+        }
+
+        // non ha una card assegnata ed è registrato, quindi ne assegno una
+        int k = 0;
+        while(k < MAX_CARDS){
+            if(cards[k].porta_utente == -1 && cards[k].stato == TO_DO){
+                break;
+            }
+            k++;
+        }
+
+        if(k == MAX_CARDS){
+            printf("Le card sono finite, non è possibile assegnarne una nuova all'utente in attesa");
+            return;
+        }
+        cards[k].porta_utente = utenti[i].porta;
+        cards[k].stato = HANDLED;
+        time(&cards[k].timestamp);
+
+        // invio della card
+        // formato invio ID | TESTO | PORTA1, PORTA2, ... | NUMERO UTENTI 
+
+        memset(BUFFER_OUT,0,DIM_BUFFER);
+
+        int offset = 0;
+
+        offset += sprintf(BUFFER_OUT,"HANDLE_CARD|%d|%s|",cards[k].id,cards[k].testo);
+        
+        for(int j = 0; j < MAX_UTENTI; j++){
+            // escludo il richiedente
+            if(utenti[j].porta == utenti[i].porta || utenti[j].porta == 0){
+                continue;
+            }
+            offset += sprintf(BUFFER_OUT + offset,"%d,",utenti[j].porta);
+        }
+        BUFFER_OUT[offset - 1] = "";
+
+        offset += sprintf(BUFFER_OUT + offset,"|%d",utenti_registrati);
+
+        send(utenti[i].socket, BUFFER_OUT,strlen(BUFFER_OUT),0);
+
+    }
+
+
+}
+
+
+/* la funzione termina la connnessione con il client, rimuove le card dell'utente 
+    e la riassegna ad un utente se è libero
+*/
+void quit_handler(int socket){
+
+    int k = trova_indice_da_socket(socket);
+    if (k<0){
+        perror("impossibile trovare l'indice corrispondente al socket per la gestione del comando \n");
+        exit(1);
+    }
+    
+    close(socket);
+    utenti_attivi --;
+    FD_CLR(socket,&fd_lettura);
+
+    utenti[k].attivo = 0;
+    utenti[k].socket = 0;
+
+    rimuovi_card_utente(utenti[k].porta);
+    if(utenti[k].porta != 0){
+        utenti_registrati --;
+    }
+
+    utenti[k].porta = 0;
+    return;
+}
 
 
 /* ================================================= Main ================================================== */
@@ -153,8 +308,6 @@ int main(){
     FD_ZERO(&fd_lettura);
     FD_ZERO(&fd_temp);
 
-    char BUFFER_IN[DIM_BUFFER];
-    char BUFFER_OUT[DIM_BUFFER];
     memset(BUFFER_IN,0,DIM_BUFFER);
     memset(BUFFER_OUT,0,DIM_BUFFER);
 
@@ -187,10 +340,11 @@ int main(){
         exit(1);
     };
 
-    printf("Lavagna online alla porta %d. Operazioni possibili | \n",PORTA_LAVAGNA);
+    printf("Lavagna online alla porta %d. Operazioni possibili | HELLO |\n",PORTA_LAVAGNA);
 
 
     // ciclo infinito che inizia mettendosi in attesa di una richiesta da un descrittore che ha ricevuto dati
+    // DA IMPLEMENTARE: GESTIONE DEI COMANDI DA TASTIERA 
     while(1){
         FD_ZERO(&fd_lettura);
         FD_SET(socket_ascolto,&fd_lettura);
@@ -245,30 +399,19 @@ int main(){
                     BUFFER_IN[n] = '\0';
                     if(n == 0){
                         // chiusura della connessione forzata senza quit
-                        int k = trova_indice_da_socket(i);
-                        if (k<0){
-                            perror("impossibile trovare l'indice corrispondente al socket per la gestione del comando \n");
-                            exit(1);
-                        }
 
-                        utenti[k].attivo = 0;
-                        utenti[k].socket = 0;
+                        quit_handler(i);
 
-                        rimuovi_card_utente(utenti[k].porta);
-                        if(utenti[k].porta != 0){
-                            utenti_registrati --;
-                        }
-                        utenti[k].porta = 0;
-                        
-                        FD_CLR(i,&fd_lettura);
-                        close(i);
-                        utenti_attivi --;
                     } 
 
                     else if (n < 0) {
                         printf("errore nella richiesta da parte del socket %d",i);
                         continue;
                     } 
+
+                    else if (n > MAX_MSG){
+                        printf("il testo del messaggio è troppo lungo");
+                    }
                     
                     else {
                         // servo la richiesta
@@ -286,19 +429,22 @@ int main(){
                         }
 
                         // in base al comando ricevuto chiamo una funzione handler diversa
+                        if (n_campi == 0){
+                            printf("comando vuoto/non valido \n");
+                        }
 
-                        if(strcmp(campo[0],"HELLO") == 0 && n_campi == 2){
+                        else if(strcmp(campo[0],"HELLO") == 0 && n_campi == 2){
                             hello_handler(i,campo[1]);
                         } 
 
                         else if (strcmp(campo[0],"CREATE_CARD") == 0 && n_campi == 4){
                             int id = atoi(campo[1]);
                             int colonna = atoi(campo[2]);
-                            create_card_handler(id,colonna,campo[3]);
+                            create_card_handler(id,colonna,campo[3],strlen(campo[3]));
                         }
 
-                        else if (strcmp(campo[0],"QUIT")){
-                            
+                        else if (strcmp(campo[0],"QUIT") == 0){
+                            quit_handler(i);
                         }
 
                         // se nessun comando ha rispettato il formato comunico al client l'errore
