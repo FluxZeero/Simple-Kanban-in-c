@@ -61,7 +61,7 @@ const char *testi_iniziali[MAX_INIT_CARDS] = {
     "Tradurre i testi in inglese"
 };
 
-/* =========================================== Funzioni di supporto =========================================== */
+/* ========================================== Funzioni di supporto ========================================== */
 
 void handle_card();
 
@@ -96,6 +96,10 @@ int trova_indice_da_socket(int socket){
     
     int ret = -1;
     int i = 0;
+
+    if(socket == STDIN_FILENO){
+        return 0;
+    }
     
     while (i < MAX_UTENTI){
         if(utenti[i].socket == socket){
@@ -129,6 +133,7 @@ void rimuovi_card_utente(int porta){
     return;
 }
 
+// ordina gli utenti per numero di porta crescente
 void sort_utenti(){
     
     int scambiati = 1;
@@ -149,9 +154,25 @@ void sort_utenti(){
 
 
 
+// separa il buffer src, di numero masssimo di campi dim, in dst, utilizzando come separatore sep
+int parse_msg(char *dst[],char *src, int numero, char* sep){
+    
+    int n_campi = 0;
+    char *token = strtok(src, sep);
+    while(token != NULL && n_campi < numero){
+        dst[n_campi] = token;
+        n_campi++;
+        token = strtok(NULL, sep);
+    }
+
+    return n_campi;
+}
+
+
+
+
+
 /* =========================================== Funzionalità del progetto =========================================== */
-
-
 
 void hello_handler(int socket_utente,char porta[MAX_MSG]){
     
@@ -160,9 +181,14 @@ void hello_handler(int socket_utente,char porta[MAX_MSG]){
         i++;
     }
 
-    if(i == MAX_UTENTI){
-        perror("ERRORE LOGICO, HO ACCETTATO UN MESSAGGIO DA UN UTENTE NON CONNESSO");
+    if(i == MAX_UTENTI && socket_utente != 0){
+        perror("ERRORE LOGICO, HO ACCETTATO UN MESSAGGIO DA UN UTENTE NON CONNESSO \n");
         exit(1);
+    }
+
+    if(socket_utente == 0){
+        printf("Non è possiile registrarsi con comandi da tastiera \n");
+        return;
     }
 
     if(utenti[i].porta != 0){
@@ -199,7 +225,7 @@ void create_card_handler(int ID, int colonna, char* testo, int dim_testo){
 
     numero_card ++;
 
-    printf("Creata nuova card: ID = %d, testo: %s\n",ID, cards[i].testo);
+    printf("Creata nuova card: ID = %d, colonna: %d testo: %s\n",ID, cards[i].stato, cards[i].testo);
 
     return;
 }
@@ -209,6 +235,8 @@ void handle_card(){
 
     sort_utenti();
     
+    int card_assegnate = 0;
+
     for(int i = 0; i < MAX_UTENTI; i++){
 
         // verifico se l'utente è registrato
@@ -238,12 +266,16 @@ void handle_card(){
         }
 
         if(k == MAX_CARDS){
-            printf("Le card sono finite, non è possibile assegnarne una nuova all'utente in attesa");
+            printf("Le card sono finite, non è possibile assegnarne una nuova all'utente in attesa \n");
             return;
         }
         cards[k].porta_utente = utenti[i].porta;
         cards[k].stato = HANDLED;
         time(&cards[k].timestamp);
+
+        card_assegnate++;
+
+        printf("Assegnata la card con ID: %d \n",cards[k].id);
 
         // invio della card
         // formato invio ID | TESTO | PORTA1, PORTA2, ... | NUMERO UTENTI 
@@ -261,14 +293,26 @@ void handle_card(){
             }
             offset += sprintf(BUFFER_OUT + offset,"%d,",utenti[j].porta);
         }
-        BUFFER_OUT[offset - 1] = "";
 
         offset += sprintf(BUFFER_OUT + offset,"|%d",utenti_registrati);
 
-        send(utenti[i].socket, BUFFER_OUT,strlen(BUFFER_OUT),0);
+        int n = send(utenti[i].socket, BUFFER_OUT,strlen(BUFFER_OUT),0);
+
+        if (n < offset){
+            printf("inviata la card con ID:%d, ma il messaggio finale è stato tagliato \n",cards[k].id);
+        } else if (n == -1){
+            printf("ERRORE: invio della card non riuscito \n");
+        } else {
+            printf("invio della card con ID: %d avvenuto con successo \n",cards[k].id);
+        }
 
     }
 
+    if(card_assegnate == 0){
+        printf("non ci sono utenti liberi per assegnare card \n");
+    }
+
+    return;
 
 }
 
@@ -278,7 +322,13 @@ void handle_card(){
 */
 void quit_handler(int socket){
 
+    if(socket == 0){
+        printf("Impossibile effettuare una disconnessione dalla riga di comando \n");
+        return;
+    }
+    
     int k = trova_indice_da_socket(socket);
+
     if (k<0){
         perror("impossibile trovare l'indice corrispondente al socket per la gestione del comando \n");
         exit(1);
@@ -298,6 +348,35 @@ void quit_handler(int socket){
 
     utenti[k].porta = 0;
     return;
+}
+
+// in base al comando ricevuto chiamo l'handler corretto per la gestione della richiesta
+void call_handler(int socket_utente, char *campo[MAX_CAMPI], int n_campi){
+    
+    
+    if(strcmp(campo[0],"HELLO") == 0 && n_campi == 2){
+        hello_handler(socket_utente,campo[1]);
+    } 
+
+    else if (strcmp(campo[0],"CREATE_CARD") == 0 && n_campi == 4){
+        int id = atoi(campo[1]);
+        int colonna = atoi(campo[2]);
+        create_card_handler(id,colonna,campo[3],strlen(campo[3]));
+    }
+
+    else if (strcmp(campo[0],"QUIT") == 0){
+        quit_handler(socket_utente);
+    } 
+
+    else if (socket_utente == STDIN_FILENO && !strcmp(campo[0],"HANDLE_CARD") && n_campi == 1){
+        // ho chiamato HANDLE_CARD da riga di comando 
+        handle_card();
+    }
+
+    // se nessun comando ha rispettato il formato comunico al client l'errore
+    else {
+        printf("ricevuto comando non valido/non esistente: %s , n_campi: %d, socket chiamante %d \n",BUFFER_IN,n_campi, socket_utente);
+    }
 }
 
 
@@ -340,14 +419,14 @@ int main(){
         exit(1);
     };
 
-    printf("Lavagna online alla porta %d. Operazioni possibili | HELLO |\n",PORTA_LAVAGNA);
-
+    printf("Lavagna online alla porta %d. Operazioni possibili | HELLO + numero_porta | CREATE_CARD + ID + COLONNA + TESTO_ATTIVITà |\n",PORTA_LAVAGNA);
 
     // ciclo infinito che inizia mettendosi in attesa di una richiesta da un descrittore che ha ricevuto dati
     // DA IMPLEMENTARE: GESTIONE DEI COMANDI DA TASTIERA 
     while(1){
         FD_ZERO(&fd_lettura);
         FD_SET(socket_ascolto,&fd_lettura);
+        FD_SET(STDIN_FILENO,&fd_lettura);
 
         // inizializzare tutti gli utenti che si sono collegati alla lavagna
         for(int i = 0; i < MAX_UTENTI; i++){
@@ -392,6 +471,20 @@ int main(){
                     
                 } 
 
+                else if (i == STDIN_FILENO){
+                    // ho rilvato una riga dal terminale 
+
+                    memset(BUFFER_IN,0,DIM_BUFFER);
+                    fgets(BUFFER_IN,DIM_BUFFER,stdin);
+                    // tolgo il ritorno carrello presente nella riga di comando 
+                    BUFFER_IN[strcspn(BUFFER_IN, "\n")] = '\0';
+                    printf("riga letta: %s \n",BUFFER_IN);
+                    char *campi[MAX_CAMPI];
+                    int n_campi = parse_msg(campi,BUFFER_IN,MAX_CAMPI,"|");
+                    
+                    call_handler(i, campi,n_campi);
+                }
+
                 else {
                 // gestione del dato
                     memset(BUFFER_IN,0,DIM_BUFFER);
@@ -414,43 +507,14 @@ int main(){
                     }
                     
                     else {
-                        // servo la richiesta
+                        // servo la richiesta: utilizzo una funzione per chiamare il giusto handler in base al messaggio ricevuto
 
-                        // implementazione in c di split()
-                        
                         char *campo[MAX_CAMPI];
-                        int n_campi = 0;
+                        char* sep = "|";
+                        int n_campi = parse_msg(campo, BUFFER_IN, MAX_CAMPI, sep);
 
-                        char *token = strtok(BUFFER_IN, "|");
-                        while(token != NULL && n_campi < MAX_CAMPI){
-                            campo[n_campi] = token;
-                            n_campi++;
-                            token = strtok(NULL, "|");
-                        }
+                        call_handler(i, campo, n_campi);
 
-                        // in base al comando ricevuto chiamo una funzione handler diversa
-                        if (n_campi == 0){
-                            printf("comando vuoto/non valido \n");
-                        }
-
-                        else if(strcmp(campo[0],"HELLO") == 0 && n_campi == 2){
-                            hello_handler(i,campo[1]);
-                        } 
-
-                        else if (strcmp(campo[0],"CREATE_CARD") == 0 && n_campi == 4){
-                            int id = atoi(campo[1]);
-                            int colonna = atoi(campo[2]);
-                            create_card_handler(id,colonna,campo[3],strlen(campo[3]));
-                        }
-
-                        else if (strcmp(campo[0],"QUIT") == 0){
-                            quit_handler(i);
-                        }
-
-                        // se nessun comando ha rispettato il formato comunico al client l'errore
-                        else {
-                            printf("ricevuto comando non valido/non esistente: %s",BUFFER_IN);
-                        }
                     }
 
                     
