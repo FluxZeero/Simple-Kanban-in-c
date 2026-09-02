@@ -17,5 +17,6 @@
 #define HANDLED 4
 
 #define COL_WIDTH 30
+#define RIGHE_LAVAGNA 16
 
 

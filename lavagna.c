@@ -152,8 +152,6 @@ void sort_utenti(){
 
 }
 
-
-
 // separa il buffer src, di numero masssimo di campi dim, in dst, utilizzando come separatore sep
 int parse_msg(char *dst[],char *src, int numero, char* sep){
     
@@ -166,6 +164,32 @@ int parse_msg(char *dst[],char *src, int numero, char* sep){
     }
 
     return n_campi;
+}
+
+/* costruisce in dest la riga r di una colonna larga COL_WIDTH:
+   r == 0 e' la riga vuota di apertura, poi ogni card occupa 3 righe:
+   ID, testo attivita', riga vuota di separazione */
+void riga_colonna(char *dest, int r, int *indici, int n_card){
+
+    char contenuto[COL_WIDTH + 1];
+    contenuto[0] = '\0';
+
+    if(r > 0){
+        int card = (r - 1) / 3;
+        int sotto_riga = (r - 1) % 3;
+
+        if(card < n_card){
+            int idx = indici[card];
+
+            if(sotto_riga == 0){
+                snprintf(contenuto, sizeof(contenuto), " ID:%d", cards[idx].id);
+            } else if(sotto_riga == 1){
+                snprintf(contenuto, sizeof(contenuto), " %.*s", COL_WIDTH - 2, cards[idx].testo);
+            }
+        }
+    }
+
+    snprintf(dest, COL_WIDTH + 1, "%-*s", COL_WIDTH, contenuto);
 }
 
 
@@ -213,7 +237,12 @@ void create_card_handler(int ID, int colonna, char* testo, int dim_testo){
     }
 
     if (dim_testo > DIM_TESTO - 1){
-        dim_testo = DIM_TESTO- 1;
+        dim_testo = DIM_TESTO - 1;
+    }
+
+    if(numero_card - 1 > ID){
+        printf("Impossibile creare una card con ID < di una già esistente, utlimo id: %d \n",numero_card - 1);
+        return;
     }
 
     int i = numero_card;
@@ -222,11 +251,11 @@ void create_card_handler(int ID, int colonna, char* testo, int dim_testo){
     cards[i].porta_utente = -1;
     strncpy(cards[i].testo, testo, dim_testo);
     time(&cards[i].timestamp);
-
     numero_card ++;
-
+    
     printf("Creata nuova card: ID = %d, colonna: %d testo: %s\n",ID, cards[i].stato, cards[i].testo);
 
+    show_lavagna();
     return;
 }
 
@@ -349,9 +378,36 @@ void quit_handler(int socket){
     return;
 }
 
+
 void show_lavagna(){
 
-    int temp = numero_card;
+    // raccolgo gli indici delle card, divisi per colonna
+    int idx_todo[MAX_CARDS], idx_doing[MAX_CARDS], idx_done[MAX_CARDS];
+    int n_todo = 0, n_doing = 0, n_done = 0;
+
+    for(int i = 0; i < numero_card; i++){
+        switch(cards[i].stato){
+            case TO_DO:
+                idx_todo[n_todo++] = i;
+                break;
+            case HANDLED:   // assegnata ma non ancora confermata con ACK: resta in To Do
+                idx_todo[n_todo++] = i;
+                break;
+            case DOING:
+                idx_doing[n_doing++] = i;
+                break;
+            case DONE:
+                idx_done[n_done++] = i;
+                break;
+        }
+    }
+
+    // una riga vuota di apertura piu' 3 righe per ogni card, con un'altezza minima fissa
+    int righe = RIGHE_LAVAGNA;
+    if(1 + n_todo * 3 > righe)  righe = 1 + n_todo * 3;
+    if(1 + n_doing * 3 > righe) righe = 1 + n_doing * 3;
+    if(1 + n_done * 3 > righe)  righe = 1 + n_done * 3;
+
     printf("\n    _____________________________________________________________________________________________\n");
     printf("   /                                                                                            /|\n");
     printf("  /                                                                                            / |\n");
@@ -362,35 +418,15 @@ void show_lavagna(){
     printf("|                                                                                            |   |\n");
     printf("|============================================================================================|   |\n");
     printf("|_____________TO_DO_________________________DOING___________________________DONE_____________|   |\n");
-    printf("|                              |                              |                              |   |\n");
 
-    int n_todo, n_doing, n_done = 0;
-    // conto le card da mettere in ogni colonna
-    for(int i = 0; i < MAX_CARDS; i++){
-        if(cards[i].stato == -1){
-            continue;
-        }
-        switch(cards[i].stato){
-            case 1:
-                n_todo++;
-            case 2:
-                n_doing++;
-            case 3:
-                n_done++;
-            case 4:
-                n_todo++;
-        }
-    }
+    char col_todo[COL_WIDTH + 1], col_doing[COL_WIDTH + 1], col_done[COL_WIDTH + 1];
 
-    while(numero_card > 0){
-        /* genero 
-          se il testo sfora allora taglio la riga
-        */
-       if(n_todo == 0){
-        // aggiungo una riga vuota |______________________________
-       } else {
+    for(int r = 0; r < righe; r++){
+        riga_colonna(col_todo,  r, idx_todo,  n_todo);
+        riga_colonna(col_doing, r, idx_doing, n_doing);
+        riga_colonna(col_done,  r, idx_done,  n_done);
 
-       }
+        printf("|%s|%s|%s|   |\n", col_todo, col_doing, col_done);
     }
 
     printf("|______________________________|______________________________|______________________________|   |\n");
@@ -444,6 +480,10 @@ void ping_user(){
 // in base al comando ricevuto chiamo l'handler corretto per la gestione della richiesta
 void call_handler(int socket_utente, char *campo[MAX_CAMPI], int n_campi){
     
+    if(n_campi == 0){
+        printf("ricevuto comando non valido/non esistente: %s , n_campi: %d, socket chiamante %d \n",BUFFER_IN,n_campi, socket_utente);
+        return;
+    }
     
     if(strcmp(campo[0],"HELLO") == 0 && n_campi == 2){
         hello_handler(socket_utente,campo[1]);
@@ -518,7 +558,7 @@ int main(){
     };
 
     show_lavagna();
-    printf("Lavagna online alla porta %d. \n Operazioni possibili | HELLO + numero_porta | CREATE_CARD + ID + COLONNA + TESTO_ATTIVITà | SHOW_LAVAGNA | SEND_USERS_LIST |\n",PORTA_LAVAGNA);
+    printf("Lavagna online alla porta %d. \n Operazioni possibili: \n| HELLO + numero_porta | \nCREATE_CARD + ID + COLONNA + TESTO_ATTIVITà\n",PORTA_LAVAGNA);
 
     // ciclo infinito che inizia mettendosi in attesa di una richiesta da un descrittore che ha ricevuto dati
     // DA IMPLEMENTARE: GESTIONE DEI COMANDI DA TASTIERA 

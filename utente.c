@@ -77,7 +77,7 @@ int main(int argc, char* argv[]){
 
     while(1){
         
-        FD_SET(0,&fd_lettura);
+        FD_SET(STDIN_FILENO,&fd_lettura);
         FD_SET(socket_P2P,&fd_lettura);
         FD_SET(socket_lavagna,&fd_lettura);
         int max_fd;
@@ -90,21 +90,8 @@ int main(int argc, char* argv[]){
         
         select(max_fd,&fd_lettura,NULL,NULL,NULL);
 
-        }
+        //gestisco i ritorni P2P
 
+    }   
     return 0;
-}   
-
-/* DA RIMUOVERE
-    
-    // gli invio dei messaggi
-    char msg[30];
-    strcpy(msg,"Hello server! \n");
-
-    ret = send(socket_lavagna,msg,strlen(msg),0);
-
-    if(ret < strlen(msg)){
-        perror("sono stati inviati meno dati dei previsti");
-        return 0;
-    }
-*/
+}
