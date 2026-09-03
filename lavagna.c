@@ -122,6 +122,7 @@ void rimuovi_card_utente(int porta){
             cards[i].porta_utente = -1;
             time(&cards[i].timestamp);
             assigned_card --;
+            // DA IMPLEMENTARE: invio all'utente che gli ho tolto la card
 
             // la card viene riassegnata se ci sono utenti liberi
             if(assigned_card < utenti_registrati){
@@ -256,6 +257,7 @@ void create_card_handler(int ID, int colonna, char* testo, int dim_testo){
     printf("Creata nuova card: ID = %d, colonna: %d testo: %s\n",ID, cards[i].stato, cards[i].testo);
 
     show_lavagna();
+
     return;
 }
 
@@ -313,7 +315,7 @@ void handle_card(){
 
         int offset = 0;
 
-        offset += sprintf(BUFFER_OUT,"HANDLE_CARD|%d|%s|",cards[k].id,cards[k].testo);
+        offset += sprintf(BUFFER_OUT,"HANDLE_CARD|%d|%s",cards[k].id,cards[k].testo);
         
         for(int j = 0; j < MAX_UTENTI; j++){
             // escludo il richiedente
@@ -561,7 +563,6 @@ int main(){
     printf("Lavagna online alla porta %d. \n Operazioni possibili: \n| HELLO + numero_porta | \nCREATE_CARD + ID + COLONNA + TESTO_ATTIVITà\n",PORTA_LAVAGNA);
 
     // ciclo infinito che inizia mettendosi in attesa di una richiesta da un descrittore che ha ricevuto dati
-    // DA IMPLEMENTARE: GESTIONE DEI COMANDI DA TASTIERA 
     while(1){
         FD_ZERO(&fd_lettura);
         FD_SET(socket_ascolto,&fd_lettura);
@@ -625,15 +626,12 @@ int main(){
                 }
 
                 else {
-                // gestione del dato
                     memset(BUFFER_IN,0,DIM_BUFFER);
                     int n = recv(i,BUFFER_IN,DIM_BUFFER - 1,0);
                     BUFFER_IN[n] = '\0';
                     if(n == 0){
                         // chiusura della connessione forzata senza quit
-
                         quit_handler(i);
-
                     } 
 
                     else if (n < 0) {

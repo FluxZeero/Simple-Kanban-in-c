@@ -5,7 +5,7 @@
 #define DIM_TESTO 256
 
 #define MAX_MSG 512
-#define MAX_CAMPI 10
+#define MAX_CAMPI 20
 
 #define MAX_UTENTI 10
 
