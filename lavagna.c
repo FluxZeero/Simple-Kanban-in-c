@@ -16,15 +16,18 @@ typedef struct {
     int porta;    /* porta dell'utente se è 0 non si è registrato*/
     int socket;   /* socket TCP su cui gli parlo */
     int attivo;   /* 1 = presente, 0 = slot libero */
+    time_t ping_timeout_counter;
 } struct_utenti;
 
 typedef struct {
     int id; 
     char testo[DIM_TESTO];
     int porta_utente; // -1 = non assegnata a nessun utente
-    int stato; // -1 non valid
+    int stato; // -1 non valid 
+    int acked; 
     time_t timestamp;
 } struct_card;
+
 
 /* =========================================== Variabili Globali =========================================== */
 
@@ -42,6 +45,8 @@ int assigned_card = 0;
 fd_set fd_lettura; //selezine degli utenti da cui mi aspetto di leggere
 fd_set fd_temp; // temporaneo, utilizzato per salvare il contenuto di fd_lettura prima dell'uso di select
 int max_fd = 0;
+
+struct timeval tv;
 
 const char *testi_iniziali[MAX_INIT_CARDS] = {
     "Implementare integrazione per il pagamento",
@@ -64,6 +69,8 @@ const char *testi_iniziali[MAX_INIT_CARDS] = {
 /* ========================================== Funzioni di supporto ========================================== */
 
 void handle_card();
+void show_lavagna();
+void move_card(int ID, int src, int dst, int porta);
 
 void init_utenti(){
     
@@ -71,6 +78,7 @@ void init_utenti(){
         utenti[i].attivo = 0;
         utenti[i].socket = -1;
         utenti[i].porta = 0;
+        utenti[i].ping_timeout_counter = 0;
     }
 
     return;
@@ -85,6 +93,7 @@ void init_cards(){
         strcpy(cards[i].testo,testi_iniziali[i]);
         cards[i].testo[DIM_TESTO - 1] = '\0';
         time(&cards[i].timestamp);
+        cards[i].acked = 0;
         numero_card ++;
     }
     
@@ -118,16 +127,8 @@ void rimuovi_card_utente(int porta){
 
     for (int i = 0; i < numero_card; i++){
         if(cards[i].porta_utente == porta && cards[i].stato == DOING){
-            cards[i].stato = TO_DO;
-            cards[i].porta_utente = -1;
-            time(&cards[i].timestamp);
-            assigned_card --;
+            move_card(cards[i].id, DOING, TO_DO, -1);
             // DA IMPLEMENTARE: invio all'utente che gli ho tolto la card
-
-            // la card viene riassegnata se ci sono utenti liberi
-            if(assigned_card < utenti_registrati){
-                handle_card();
-            }
         }
     }
 
@@ -242,7 +243,7 @@ void create_card_handler(int ID, int colonna, char* testo, int dim_testo){
     }
 
     if(numero_card - 1 > ID){
-        printf("Impossibile creare una card con ID < di una già esistente, utlimo id: %d \n",numero_card - 1);
+        printf("Impossibile creare una card con ID < di una già esistente, ultimo id: %d \n",numero_card - 1);
         return;
     }
 
@@ -259,6 +260,65 @@ void create_card_handler(int ID, int colonna, char* testo, int dim_testo){
     show_lavagna();
 
     return;
+}
+
+// muove la card dalla colonna src alla colonna dst con porta = -2 non cambia la porta
+// può essere chiamata solo da altre funzioni lato server
+void move_card(int ID, int src, int dst, int porta){
+    
+    if(src == dst){
+        return;
+    }
+
+    if(ID >= numero_card){
+        printf("impossibile muovere la card: non esiste\n");
+        return;
+    }
+
+    if(src > 4 || src < 1 || dst < 1 || dst > 4){
+        printf("impossibile spostare la card, la colonna src o dst non esiste \n");
+        return;
+    }
+
+    int i = 0;
+    while (i < numero_card && cards[i].id != ID){
+        i++;
+    }
+    if (i == numero_card){
+        printf("impossibile spostare la card: non trovata");
+        return;
+    }
+
+    cards[i].stato = dst;
+    time(&cards[i].timestamp);
+    show_lavagna();
+
+    // se è una card che non era in TO_DO provo a riassegnarla
+    if(dst == TO_DO){
+        cards[i].porta_utente = -1;
+        handle_card();
+    }
+
+    if((src == TO_DO && dst == DOING) || (src == TO_DO && dst == HANDLED)){
+
+        if(porta == -1){
+            printf("impossibile spostare la card: non si può spostare da TO_DO verso doing/handled\n");
+            return;
+        }
+
+        if(porta == -2){
+            return;
+        }
+        cards[i].porta_utente = porta;
+    }
+
+    if(src == HANDLED && dst == TO_DO){
+        cards[i].acked = 1;
+    }
+
+
+    return;
+
 }
 
 /* assegna le card in ordine crescente di porta, verifica se ha una card attiva altrimenti gliela assegna e aspetta l'ack*/
@@ -300,9 +360,8 @@ void handle_card(){
             printf("Le card sono finite, non è possibile assegnarne una nuova all'utente in attesa \n");
             return;
         }
-        cards[k].porta_utente = utenti[i].porta;
-        cards[k].stato = HANDLED;
-        time(&cards[k].timestamp);
+
+        move_card(cards[k].id,cards[k].stato,HANDLED,utenti[i].porta);
 
         card_assegnate++;
 
@@ -315,7 +374,7 @@ void handle_card(){
 
         int offset = 0;
 
-        offset += sprintf(BUFFER_OUT,"HANDLE_CARD|%d|%s",cards[k].id,cards[k].testo);
+        offset += sprintf(BUFFER_OUT,"HANDLE_CARD|%d|%s|",cards[k].id,cards[k].testo);
         
         for(int j = 0; j < MAX_UTENTI; j++){
             // escludo il richiedente
@@ -341,6 +400,9 @@ void handle_card(){
 
     if(card_assegnate == 0){
         printf("non ci sono utenti liberi per assegnare card \n");
+    } else {
+        printf("assegnate: %d cards",card_assegnate);
+        show_lavagna();
     }
 
     return;
@@ -370,6 +432,7 @@ void quit_handler(int socket){
 
     utenti[k].attivo = 0;
     utenti[k].socket = 0;
+    utenti[k].ping_timeout_counter = 0;
 
     rimuovi_card_utente(utenti[k].porta);
     if(utenti[k].porta != 0){
@@ -475,8 +538,52 @@ void user_list_handler(int socket){
     return;
 }
 
+// ogni 5 secondi se non ho ricevuto altre richieste pingo gli user 
+// se non mi rispondono entro 5 secondi allora gli tolgo la card 
 void ping_user(){
-    return;
+    time_t adesso = time(NULL);
+
+    for (int i = 0; i < MAX_CARDS; i++){
+        if (cards[i].stato != DOING || cards[i].porta_utente == -1){
+            continue;
+        }
+
+        int k = 0;
+        while(k < MAX_UTENTI && utenti[k].porta != cards[i].porta_utente){
+            k++;
+        }
+        if(k == MAX_UTENTI){
+            continue;
+        }
+
+        if(utenti[k].ping_timeout_counter != 0){
+            // gia' pingato: e' scaduto il tempo di risposta?
+            if(adesso - utenti[k].ping_timeout_counter >= 30){
+                printf("utente %d non risponde al ping, libero la card %d \n", utenti[k].porta, cards[i].id);
+                move_card(cards[i].id, DOING, TO_DO, -1);
+                utenti[k].ping_timeout_counter = 0;
+            }
+            continue;
+        }
+
+        // non ancora pingato: lo faccio solo se e' ferma da abbastanza tempo
+        if(adesso - cards[i].timestamp >= 90){
+            memset(BUFFER_OUT,0,DIM_BUFFER);
+            sprintf(BUFFER_OUT,"PING");
+            send(utenti[k].socket, BUFFER_OUT, strlen(BUFFER_OUT), 0);
+            utenti[k].ping_timeout_counter = adesso;
+        }
+    }
+}
+
+void pong_handler(int socket_utente){
+    int k = trova_indice_da_socket(socket_utente);
+    if(k < 0){
+        printf("errore logico: in pong lavagna è arrivato un socket associato a nessun utente : %d \n",socket_utente);
+        return;
+    }
+    utenti[k].ping_timeout_counter = 0;
+    printf("arrivato correttamente il pong dall'utente %d", socket_utente);
 }
 
 // in base al comando ricevuto chiamo l'handler corretto per la gestione della richiesta
@@ -513,6 +620,20 @@ void call_handler(int socket_utente, char *campo[MAX_CAMPI], int n_campi){
     else if (strcmp(campo[0],"SHOW_LAVAGNA") == 0){
         show_lavagna();
     }
+    
+    else if (strcmp(campo[0],"ACK_CARD") == 0 && n_campi == 2){
+        int id = atoi(campo[1]);
+        move_card(id, HANDLED, DOING, -1);
+    }
+
+    else if (strcmp(campo[0],"CARD_DONE") == 0 && n_campi == 2){
+        int id = atoi(campo[1]);
+        move_card(id,DOING,DONE,-2);
+    }
+
+    else if (strcmp(campo[0],"PONG") == 0){
+        pong_handler(socket_utente);
+    }
 
     // se nessun comando ha rispettato il formato comunico al client l'errore
     else {
@@ -536,6 +657,10 @@ int main(){
         perror("errore di creazione del socket \n");
         exit(1);
     }
+
+    // permette di riavviare subito la lavagna sulla stessa porta senza aspettare il TIME_WAIT
+    int riuso = 1;
+    setsockopt(socket_ascolto, SOL_SOCKET, SO_REUSEADDR, &riuso, sizeof(riuso));
 
     max_fd = socket_ascolto;
     
@@ -562,11 +687,15 @@ int main(){
     show_lavagna();
     printf("Lavagna online alla porta %d. \n Operazioni possibili: \n| HELLO + numero_porta | \nCREATE_CARD + ID + COLONNA + TESTO_ATTIVITà\n",PORTA_LAVAGNA);
 
+    int stdin_attivo = 1;
+
     // ciclo infinito che inizia mettendosi in attesa di una richiesta da un descrittore che ha ricevuto dati
     while(1){
         FD_ZERO(&fd_lettura);
         FD_SET(socket_ascolto,&fd_lettura);
-        FD_SET(STDIN_FILENO,&fd_lettura);
+        if(stdin_attivo){
+            FD_SET(STDIN_FILENO,&fd_lettura);
+        }
 
         // inizializzare tutti gli utenti che si sono collegati alla lavagna
         for(int i = 0; i < MAX_UTENTI; i++){
@@ -575,8 +704,19 @@ int main(){
             }
         }
 
+        tv.tv_sec = 5;
+        tv.tv_usec = 0;
         // mi metto in attesa di una richiesta in arrivo su una delle potre
-        select(max_fd + 1, &fd_lettura, NULL, NULL, NULL);
+        int n_richieste = select(max_fd + 1, &fd_lettura, NULL, NULL, &tv);
+
+        if (n_richieste < 0){
+
+        }
+        
+        if (n_richieste == 0){
+            ping_user();
+            continue;
+        }
 
         // trovo la richiesta che mi ha fatto sbloccare
         for(int i = 0; i <= max_fd; i++){
@@ -612,16 +752,22 @@ int main(){
                 } 
 
                 else if (i == STDIN_FILENO){
-                    // ho rilvato una riga dal terminale 
+                    // ho rilvato una riga dal terminale
 
                     memset(BUFFER_IN,0,DIM_BUFFER);
-                    fgets(BUFFER_IN,DIM_BUFFER,stdin);
-                    // tolgo il ritorno carrello presente nella riga di comando 
+                    if(fgets(BUFFER_IN,DIM_BUFFER,stdin) == NULL){
+                        // EOF su stdin: smetto di osservarlo, altrimenti select()
+                        // lo segnala "pronto" per sempre e il ciclo gira a vuoto
+                        printf("stdin chiuso (EOF): comandi da tastiera disattivati \n");
+                        stdin_attivo = 0;
+                        continue;
+                    }
+                    // tolgo il ritorno carrello presente nella riga di comando
                     BUFFER_IN[strcspn(BUFFER_IN, "\n")] = '\0';
                     printf("riga letta: %s \n",BUFFER_IN);
                     char *campi[MAX_CAMPI];
                     int n_campi = parse_msg(campi,BUFFER_IN,MAX_CAMPI,"|");
-                    
+
                     call_handler(i, campi,n_campi);
                 }
 
