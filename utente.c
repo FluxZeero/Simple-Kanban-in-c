@@ -412,7 +412,7 @@ void review_ack_handler(int socket_utente, int ID){
 void pong_handler(){
     // invia il pong alla lavagna
     memset(BUFFER_OUT,0,DIM_BUFFER);
-    sprintf(BUFFER_OUT,"PONG");
+    sprintf(BUFFER_OUT,"PONG_LAVAGNA");
     if(!invia_msg(socket_lavagna,BUFFER_OUT)){
         printf("errore nell'invio del pong");
     }
@@ -476,7 +476,7 @@ void call_handler(int socket_utente, char *campo[MAX_CAMPI], int n_campi){
         printf("ricevuto comando non valido/non esistente: %s , n_campi: %d, socket chiamante %d \n",BUFFER_IN,n_campi, socket_utente);
         return;
     }
-    if (socket_utente == socket_lavagna && strcmp(campo[0],"PING") == 0 && n_campi == 1){
+    if (socket_utente == socket_lavagna && strcmp(campo[0],"PING_USER") == 0 && n_campi == 1){
         pong_handler();
     }
 

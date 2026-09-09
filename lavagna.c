@@ -673,7 +673,7 @@ void ping_user(){
         // non ancora pingato: lo faccio solo se e' ferma da abbastanza tempo
         if(adesso - cards[i].timestamp >= 90){
             memset(BUFFER_OUT,0,DIM_BUFFER);
-            sprintf(BUFFER_OUT,"PING");
+            sprintf(BUFFER_OUT,"PING_USER");
             invia_msg(utenti[k].socket, BUFFER_OUT);
             utenti[k].ping_timeout_counter = adesso;
         }
@@ -745,7 +745,7 @@ void call_handler(int socket_utente, char *campo[MAX_CAMPI], int n_campi){
         move_card(id,DOING,DONE,-2);
     }
 
-    else if (strcmp(campo[0],"PONG") == 0){
+    else if (strcmp(campo[0],"PONG_LAVAGNA") == 0){
         pong_handler(socket_utente);
     }
 
