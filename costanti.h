@@ -1,7 +1,7 @@
 #define PORTA_LAVAGNA 5678
 #define PORTA_UTENTI 5679
 
-#define DIM_BUFFER 1024
+#define DIM_BUFFER 2048
 #define DIM_TESTO 256
 
 #define MAX_MSG 512

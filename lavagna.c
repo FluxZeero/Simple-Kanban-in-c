@@ -39,6 +39,7 @@ char BUFFER_OUT[DIM_BUFFER];
 int utenti_attivi = 0;
 int utenti_registrati = 0;
 int numero_card = 0;
+int socket_ascolto;
 
 fd_set fd_lettura; //selezine degli utenti da cui mi aspetto di leggere
 fd_set fd_temp; // temporaneo, utilizzato per salvare il contenuto di fd_lettura prima dell'uso di select
@@ -250,8 +251,13 @@ void create_card_handler(int ID, int colonna, char* testo, int dim_testo){
         dim_testo = DIM_TESTO - 1;
     }
 
-    if(numero_card - 1 > ID){
-        printf("Impossibile creare una card con ID < di una già esistente, ultimo id: %d \n",numero_card - 1);
+    if(numero_card - 1 >= ID){
+        printf("Impossibile creare una card con ID <= di una già esistente, ultimo id: %d \n",numero_card - 1);
+        return;
+    }
+
+    if(colonna < TO_DO || colonna > DONE){
+        printf("Impossibile creare la card: colonna %d non valida (usa %d=TO_DO, %d=DOING, %d=DONE)\n",colonna,TO_DO,DOING,DONE);
         return;
     }
 
@@ -266,6 +272,7 @@ void create_card_handler(int ID, int colonna, char* testo, int dim_testo){
     printf("Creata nuova card: ID = %d, colonna: %d testo: %s\n",ID, cards[i].stato, cards[i].testo);
 
     show_lavagna();
+    handle_card();
 
     return;
 }
@@ -275,11 +282,6 @@ void create_card_handler(int ID, int colonna, char* testo, int dim_testo){
 void move_card(int ID, int src, int dst, int porta){
     
     if(src == dst){
-        return;
-    }
-
-    if(ID >= numero_card){
-        printf("impossibile muovere la card: non esiste\n");
         return;
     }
 
@@ -304,6 +306,11 @@ void move_card(int ID, int src, int dst, int porta){
     // se è una card che non era in TO_DO provo a riassegnarla
     if(dst == TO_DO){
         cards[i].porta_utente = -1;
+    }
+
+    // se non ho ricevuto l'ack in tempo la card viene rimessa in todo
+    // oppure se è completata allora gli assegna un altra card
+    if(dst == TO_DO || dst == DONE){
         handle_card();
     }
 
@@ -339,10 +346,11 @@ void handle_card(){
             continue;
         }
 
-        // verifico se ha già una card assegnata
+        // verifico se ha già una card in corso (le card DONE restano con la sua
+        // porta come storico di chi le ha completate, ma non lo tengono occupato)
         int assegnata = 0;
         for(int j = 0; j < MAX_CARDS; j++){
-            if(utenti[i].porta == cards[j].porta_utente){
+            if(utenti[i].porta == cards[j].porta_utente && (cards[j].stato == HANDLED || cards[j].stato == DOING)){
                 assegnata = 1;
                 break;
             }
@@ -372,23 +380,32 @@ void handle_card(){
         printf("Assegnata la card con ID: %d \n",cards[k].id);
 
         // invio della card
-        // formato invio ID | TESTO | PORTA1, PORTA2, ... | NUMERO UTENTI 
+        // formato invio ID | TESTO | PORTA1, PORTA2, ... | NUMERO UTENTI
 
-        memset(BUFFER_OUT,0,DIM_BUFFER);
-
-        int offset = 0;
-
-        offset += sprintf(BUFFER_OUT,"HANDLE_CARD|%d|%s|",cards[k].id,cards[k].testo);
+        // preparo la lista delle altre porte; se è vuota ovvero c'è solo 1 utente
+        // uso un placeholder "-", altrimenti il campo vuoto tra due "|" verrebbe
+        // collassato dal parsing
         
+        char lista_porte[MAX_UTENTI * 6 + 1];
+        int offset = 0;
+        lista_porte[0] = '\0';
+
         for(int j = 0; j < MAX_UTENTI; j++){
             // escludo il richiedente
             if(utenti[j].porta == utenti[i].porta || utenti[j].porta == 0){
                 continue;
             }
-            offset += sprintf(BUFFER_OUT + offset,"%d,",utenti[j].porta);
+            offset += sprintf(lista_porte + offset,"%d,",utenti[j].porta);
         }
 
-        offset += sprintf(BUFFER_OUT + offset,"|%d",utenti_registrati);
+        if(offset > 0){
+            lista_porte[offset - 1] = '\0';
+        } else {
+            strcpy(lista_porte, "-");
+        }
+
+        memset(BUFFER_OUT,0,DIM_BUFFER);
+        snprintf(BUFFER_OUT,DIM_BUFFER,"HANDLE_CARD|%d|%s|%s|%d",cards[k].id,cards[k].testo,lista_porte,utenti_registrati);
 
         if(invia_msg(utenti[i].socket, BUFFER_OUT)){
             printf("invio della card con ID: %d avvenuto con successo \n",cards[k].id);
@@ -430,17 +447,36 @@ void quit_handler(int socket){
     utenti_attivi --;
     FD_CLR(socket,&fd_lettura);
 
+    // salvo la porta prima di azzerarla: mi serve per liberare le sue card,
+    int porta_disconnessa = utenti[k].porta;
+
     utenti[k].attivo = 0;
     utenti[k].socket = 0;
     utenti[k].ping_timeout_counter = 0;
+    utenti[k].porta = 0;
 
-    rimuovi_card_utente(utenti[k].porta);
-    if(utenti[k].porta != 0){
+    if(porta_disconnessa != 0){
         utenti_registrati --;
     }
 
-    utenti[k].porta = 0;
+    rimuovi_card_utente(porta_disconnessa);
+
     return;
+}
+
+// termina la lavagna, richiamato da tastiera: chiude tutti i socket aperti ed esce
+void close_handler(){
+
+    for(int i = 0; i < MAX_UTENTI; i++){
+        if(utenti[i].attivo){
+            close(utenti[i].socket);
+        }
+    }
+
+    close(socket_ascolto);
+
+    printf("lavagna chiusa \n");
+    exit(0);
 }
 
 
@@ -507,8 +543,65 @@ void show_lavagna(){
     return;
 }
 
+// costruisce l'elenco "id:testo;id:testo;..." delle card nello stato indicato
+// dest_size e' la dimensione vera del buffer dest, per non scriverci fuori
+void lista_compatta(char* dest, int dest_size, int stato1, int stato2){
+    int offset = 0;
+    dest[0] = '\0';
+
+    for(int i = 0; i < numero_card; i++){
+        if(cards[i].stato != stato1 && cards[i].stato != stato2){
+            continue;
+        }
+
+        // tolgo dal testo i separatori che usiamo nel messaggio, altrimenti
+        // romperebbero il parsing lato utente
+        char testo_sicuro[COL_WIDTH + 1];
+        snprintf(testo_sicuro, sizeof(testo_sicuro), "%.30s", cards[i].testo);
+        for(char *p = testo_sicuro; *p; p++){
+            if(*p == '|' || *p == ';' || *p == ':'){
+                *p = ' ';
+            }
+        }
+
+        offset += snprintf(dest + offset, dest_size - offset, "%d:%s;", cards[i].id, testo_sicuro);
+    }
+
+    if(offset == 0){
+        strcpy(dest, "-");
+    } else {
+        dest[offset - 1] = '\0';
+    }
+}
+
+// manda al richiedente i dati della board in forma compatta
+void show_lavagna_data_handler(int socket){
+    char lista_todo[600], lista_doing[600], lista_done[600];
+
+    lista_compatta(lista_todo, sizeof(lista_todo), TO_DO, HANDLED);
+    lista_compatta(lista_doing, sizeof(lista_doing), DOING, -1);
+    lista_compatta(lista_done, sizeof(lista_done), DONE, -1);
+
+    memset(BUFFER_OUT,0,DIM_BUFFER);
+    snprintf(BUFFER_OUT,DIM_BUFFER,"SHOW_LAVAGNA_DATA|%s|%s|%s",lista_todo,lista_doing,lista_done);
+
+    invia_msg(socket, BUFFER_OUT);
+
+    return;
+}
+
 // manda la lista delle porte all'utente identificato con socket
 void user_list_handler(int socket){
+
+    // il richiedente non deve comparire nella propria lista, altrimenti si
+    // connetterebbe a se stesso (non si applica alla richiesta da tastiera)
+    int porta_richiedente = -1;
+    if(socket != STDIN_FILENO){
+        int richiedente = trova_indice_da_socket(socket);
+        if(richiedente >= 0){
+            porta_richiedente = utenti[richiedente].porta;
+        }
+    }
 
     // preparo la lista delle porte (ogni porta al massimo "65535,", 6 caratteri)
     char lista_porte[MAX_UTENTI * 6 + 1];
@@ -516,7 +609,7 @@ void user_list_handler(int socket){
     lista_porte[0] = '\0';
 
     for(int i = 0; i < MAX_UTENTI; i++){
-        if(utenti[i].porta == 0){
+        if(utenti[i].porta == 0 || utenti[i].porta == porta_richiedente){
             continue;
         }
 
@@ -525,6 +618,10 @@ void user_list_handler(int socket){
 
     if(offset > 0){
         lista_porte[offset - 1] = '\0';
+    } else {
+        // nessun altro utente: placeholder, altrimenti il campo vuoto verrebbe
+        // collassato dal parsing e sfaserebbe il numero di campi del messaggio
+        strcpy(lista_porte, "-");
     }
 
     if(socket == STDIN_FILENO){
@@ -590,7 +687,7 @@ void pong_handler(int socket_utente){
         return;
     }
     utenti[k].ping_timeout_counter = 0;
-    printf("arrivato correttamente il pong dall'utente %d", socket_utente);
+    printf("arrivato correttamente il pong dall'utente %d \n", socket_utente);
 }
 
 // in base al comando ricevuto chiamo l'handler corretto per la gestione della richiesta
@@ -613,7 +710,12 @@ void call_handler(int socket_utente, char *campo[MAX_CAMPI], int n_campi){
 
     else if (strcmp(campo[0],"QUIT") == 0){
         quit_handler(socket_utente);
-    } 
+    }
+
+    else if (socket_utente == STDIN_FILENO && strcmp(campo[0],"CLOSE") == 0 && n_campi == 1){
+        // ho chiamato CLOSE da riga di comando: termino la lavagna
+        close_handler();
+    }
 
     else if (socket_utente == STDIN_FILENO && !strcmp(campo[0],"HANDLE_CARD") && n_campi == 1){
         // ho chiamato HANDLE_CARD da riga di comando 
@@ -626,6 +728,11 @@ void call_handler(int socket_utente, char *campo[MAX_CAMPI], int n_campi){
 
     else if (strcmp(campo[0],"SHOW_LAVAGNA") == 0){
         show_lavagna();
+        if(socket_utente != STDIN_FILENO){
+            // richiesta arrivata da un utente: gli rimando anche i dati
+            // così può stamparsi la board sul proprio terminale
+            show_lavagna_data_handler(socket_utente);
+        }
     }
     
     else if (strcmp(campo[0],"ACK_CARD") == 0 && n_campi == 2){
@@ -658,7 +765,7 @@ int main(){
     memset(BUFFER_IN,0,DIM_BUFFER);
     memset(BUFFER_OUT,0,DIM_BUFFER);
 
-    int socket_ascolto = socket(AF_INET, SOCK_STREAM, 0); // genero un socket globale,tcp,protocollo standard
+    socket_ascolto = socket(AF_INET, SOCK_STREAM, 0); // genero un socket globale,tcp,protocollo standard
 
     if(socket_ascolto < 0){ // controllo che il socket sia stato generato correttamente
         perror("errore di creazione del socket \n");
@@ -692,7 +799,7 @@ int main(){
     };
 
     show_lavagna();
-    printf("Lavagna online alla porta %d. \n Operazioni possibili: \n| HELLO + numero_porta | \nCREATE_CARD + ID + COLONNA + TESTO_ATTIVITà\n",PORTA_LAVAGNA);
+    printf("Lavagna online alla porta %d. \n Operazioni possibili da tastiera: \nCREATE_CARD|ID|COLONNA|TESTO_ATTIVITA|SHOW_LAVAGNA|SEND_USER_LIST|HANDLE_CARD|CLOSE\n",PORTA_LAVAGNA);
 
     int stdin_attivo = 1;
 

@@ -1,0 +1,63 @@
+\documentclass{article}
+
+\usepackage[italian]{babel}
+\usepackage[a4paper,top=2cm,bottom=2cm,left=3cm,right=3cm]{geometry}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath}
+\usepackage[colorlinks=true, allcolors=blue]{hyperref}
+
+\setcounter{secnumdepth}{0}
+
+\begin{document}
+
+% ----- Intestazione -----
+\begin{flushleft}
+\normalsize
+kanban -- [Nome Cognome] -- [data]\\
+\rule{\textwidth}{0.4pt}
+\end{flushleft}
+
+\section{Introduzione}
+Il progetto implementa il flusso previsto per matricola \textbf{dispari}: la lavagna assegna le card agli utenti con \verb|HANDLE_CARD| in ordine di porta, e prima del completamento gli utenti si scambiano un messaggio di revisione tra pari (\verb|REVIEW_CARD|/\verb|REVIEW_ACK|).
+Per la gestione delle connessioni è stato adottato un approccio a singolo processo, singolo thread, basato su \verb|select()| con timeout, sia lato lavagna che lato utente, invece che su un thread dedicato per ciascuna connessione. Questo evita completamente la necessità di proteggere le strutture dati condivise con mutex o altri meccanismi di sincronizzazione: essendo un solo thread a toccarle, non può esserci accesso concorrente. Il costo di questa scelta è che la logica applicativa va espressa come controlli periodici sullo stato, invece che come sequenze bloccanti in stile richiesta/risposta.
+\subsection{Compilazione}
+Non è presente un Makefile: la lavagna e l'utente si compilano con due chiamate dirette a \verb|gcc|, riportate in fondo a questo documento.
+\subsection{Filetree}
+Il progetto è organizzato in modo piatto nella cartella principale: \verb|lavagna.c|, \verb|utente.c| e \verb|costanti.h| (le costanti condivise dai due eseguibili, incluse le porte di ascolto e le dimensioni dei buffer). I due sorgenti duplicano alcune funzioni di supporto identiche (parsing dei messaggi, invio con terminatore): trattandosi di due eseguibili distinti e indipendenti, si è preferito accettare questa piccola duplicazione piuttosto che introdurre un file comune e la relativa complicazione in fase di compilazione.
+
+\section{Strutture Dati}
+\subsection{Lavagna}
+La lavagna mantiene due array a dimensione fissa, dimensionati sulle costanti massime del progetto: uno di utenti connessi (porta, socket, stato di attività, timestamp dell'ultimo ping) e uno di card (id, testo, colonna, porta dell'utente assegnatario, timestamp dell'ultima modifica). Le due strutture non sono collegate direttamente tra loro, se non tramite la porta memorizzata in ciascuna card: questo permette, ad esempio, di riconoscere quale utente ha completato una card anche dopo che quell'utente si è disconnesso.
+Non essendoci concorrenza interna alla lavagna (un solo thread), non è stata necessaria alcuna protezione tramite lock.
+\subsection{Utente}
+L'utente mantiene una struttura analoga per i peer con cui è in contatto (porta, socket, conferma di review ricevuta) e una singola struttura per la card correntemente in carico.
+L'eseguibile utente è composto da un thread principale, che gestisce sia l'input da tastiera sia la comunicazione di rete con la lavagna e con i peer, e da un secondo thread, avviato solo dopo la ricezione di una card, con l'unico scopo di simulare il tempo di lavorazione tramite una \verb|sleep()| bloccante. Senza questo secondo thread, l'attesa fermerebbe l'intero ciclo di eventi, impedendo di rispondere nel frattempo ai messaggi in arrivo. Il coordinamento tra i due avviene tramite un singolo flag booleano (\verb|card_done|), l'unico dato condiviso tra i due thread: non essendoci altre risorse in comune, non è stata ritenuta necessaria una sincronizzazione più elaborata.
+
+\section{Flusso di comunicazione}
+Sia sulla lavagna che sull'utente devono poter avvenire, in qualsiasi momento e senza un ordine prestabilito, eventi di natura diversa: l'arrivo di un comando da un socket, la connessione di un nuovo utente, la scadenza di un timeout (ping verso un utente inattivo, fine della simulazione di lavoro). Per questo il ciclo principale di entrambi gli eseguibili è costruito attorno a un'unica \verb|select()| con timeout breve (dell'ordine di pochi secondi), invece che attorno a chiamate \verb|recv()| bloccanti: ad ogni risveglio, sia per l'arrivo di dati che per la scadenza del timeout, vengono ricontrollati sia i socket pronti in lettura sia lo stato interno (flag impostati dal thread di lavorazione, timeout di review in corso).
+
+\subsection{Messaggi Lavagna-Utenti}
+I messaggi sono testo semplice, con campi separati da \verb`|` e terminati da \verb|\n| (es. \verb|HANDLE_CARD|id|testo|porte|numero\_utenti|). La scelta testuale rispetto a un formato binario è motivata dalla facilità di debug durante lo sviluppo, dato che i messaggi restano leggibili direttamente nei log, e dalla semplicità del parsing tramite le funzioni di libreria standard, a fronte di un overhead per messaggio giudicato trascurabile alla scala di questo progetto.
+
+Il terminatore \verb|\n| definisce esplicitamente il confine tra un messaggio e il successivo. Il limite di questa scelta, riscontrato concretamente in fase di test, è che il codice assume che una singola \verb|recv()| corrisponda a un solo messaggio completo: se due messaggi diretti allo stesso peer vengono inviati a distanza ravvicinata, TCP può consegnarli incollati in un'unica \verb|recv()|, e solo il primo viene interpretato correttamente, il secondo va perso silenziosamente. Per la fase di review, dove la conseguenza di un messaggio perso è una card bloccata indefinitamente, è stato aggiunto un timeout che rinvia la richiesta solo a chi non ha ancora risposto. Una soluzione completa richiederebbe un buffer di riassemblaggio per ciascun socket, in grado di accumulare byte tra letture successive; è stata valutata non necessaria data la dimensione ridotta dei messaggi scambiati e la mitigazione già presente sul percorso più critico.
+
+\subsection{Messaggi Utenti-Utenti}
+Le connessioni tra utenti vengono aperte una sola volta per ciascuna coppia di peer e riutilizzate per tutte le card successive, invece di essere aperte e chiuse ad ogni scambio: appena connesso, un utente invia un messaggio di presentazione (\verb|HELLO_PEER|) con la propria porta di ascolto reale, necessaria perché la porta osservata da chi accetta la connessione è quella effimera lato client, non la porta su cui quell'utente è a sua volta in ascolto. La connessione resta aperta finché uno dei due non si disconnette, ed è riconosciuta come già esistente (evitando una seconda connessione verso lo stesso peer) confrontando la porta annunciata con quelle già note.
+Questa scelta riduce il numero di handshake TCP rispetto a un'apertura per ogni fase di revisione, al costo di dover gestire esplicitamente la possibilità che una connessione così mantenuta cada in un momento imprevisto: se questo avviene mentre si è in attesa della sua conferma di review, viene richiesta una lista aggiornata alla lavagna invece di restare bloccati indefinitamente in attesa di un peer che non risponderà più.
+
+\section{Limiti noti}
+Una card nello stato \verb|HANDLED| (assegnata, ma di cui non è ancora arrivato l'\verb|ACK_CARD|) non viene liberata se l'utente a cui è stata assegnata si disconnette prima di confermarla: il meccanismo di timeout è implementato solo per lo stato \verb|DOING|. I comandi di ping sono implementati con i nomi \verb|PING|/\verb|PONG| anziché \verb|PING_USER|/\verb|PONG_LAVAGNA| indicati in specifica, pur mantenendo lo stesso comportamento.
+
+\vfill
+\hrule
+\vspace{0.5em}
+{\footnotesize
+Per compilare:
+\begin{verbatim}
+gcc -Wall -o lavagna lavagna.c
+gcc -Wall -pthread -o utente utente.c
+\end{verbatim}
+La lavagna va avviata per prima (\verb|./lavagna|, nessun argomento); ogni utente va avviato in un terminale separato con \verb|./utente <porta>|, con porta a partire da 5679 e incrementale per ogni nuovo utente. Tutti i componenti girano sullo stesso host, su \verb|127.0.0.1|.
+}
+\end{document}

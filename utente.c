@@ -43,6 +43,8 @@ struct_curr_card curr_card;
 
 int card_done = 0; // il thread la imposta ad 1 quando ha finito con la card
 int reviewed = 0; // viene impostata ad 1 quando ho ricevuto REVIEW_ACK da tutti gli utenti
+int in_review = 0; // 1 mentre aspetto le REVIEW_ACK per la card corrente
+time_t review_iniziata = 0; // quando è partita l'attesa della review corrente
 
 
 
@@ -110,8 +112,9 @@ int get_msg(int socket){
             exit(0);
         }
         close_handler(socket);
+        return 0;
     }
-                
+
     else if (n > MAX_MSG){
         printf("il testo del messaggio è troppo lungo");
         return 0;
@@ -136,6 +139,16 @@ void close_handler(int socket){
             utenti[i].attivo = 0;
         }
     }
+
+    if(in_review){
+        // il peer perso poteva essere uno di quelli da cui aspettavo la review:
+        // richiedo di nuovo la lista aggiornata e rimando la richiesta a chi
+        // è rimasto attivo (o a chi si è collegato nel frattempo)
+        memset(BUFFER_OUT,0,DIM_BUFFER);
+        sprintf(BUFFER_OUT,"REQUEST_USER_LIST");
+        invia_msg(socket_lavagna,BUFFER_OUT);
+    }
+
     return;
 }
 
@@ -146,6 +159,7 @@ void* process_card(void* arg){
     // simulazione del tempo di lavoro sulla card
     sleep(secondi);
 
+    printf("ho finito la card con id: %d, chiedo una review\n",curr_card.ID);
     // segnalo al thread principale che il lavoro è finito: si occuperà lui di
     // chiedere la lista utenti aggiornata e far partire la review
     card_done = 1;
@@ -176,7 +190,6 @@ void connect_to_user(int porta){
     int i = 0;
     while(i < MAX_UTENTI){
         if(utenti[i].porta == porta){
-            printf("connessione con l'utente di porta: %d già effettuata",porta);
             return;
         }
         i++;
@@ -239,6 +252,58 @@ void hello_peer_handler(int socket_utente, char* porta_str){
     return;
 }
 
+// formatta una singola cella "ID testo" a partire dal token "id:testo"; NULL = cella vuota
+void formatta_cella(char* dest, int size, char* voce){
+    if(voce == NULL){
+        dest[0] = '\0';
+        return;
+    }
+    char *due_punti = strchr(voce, ':');
+    if(due_punti == NULL){
+        snprintf(dest, size, "%s", voce);
+        return;
+    }
+    *due_punti = '\0';
+    snprintf(dest, size, "%s %s", voce, due_punti + 1);
+}
+
+// riceve i dati della board (id:testo per colonna, separati da ';') e li stampa in tabella
+void show_lavagna_data_handler(char* lista_todo, char* lista_doing, char* lista_done){
+    char *todo[MAX_CAMPI], *doing[MAX_CAMPI], *done[MAX_CAMPI];
+    int n_todo  = (strcmp(lista_todo,"-")  == 0) ? 0 : parse_msg(todo,  lista_todo,  MAX_CAMPI, ";");
+    int n_doing = (strcmp(lista_doing,"-") == 0) ? 0 : parse_msg(doing, lista_doing, MAX_CAMPI, ";");
+    int n_done  = (strcmp(lista_done,"-")  == 0) ? 0 : parse_msg(done,  lista_done,  MAX_CAMPI, ";");
+
+    int righe = n_todo;
+    if(n_doing > righe) righe = n_doing;
+    if(n_done  > righe) righe = n_done;
+
+    // intestazione delle tre colonne, allineata a sinistra su COL_WIDTH caratteri
+    printf("\n%-*s | %-*s | %-*s\n", COL_WIDTH, "TO_DO", COL_WIDTH, "DOING", COL_WIDTH, "DONE");
+    // riga di trattini sotto l'intestazione, tagliata a COL_WIDTH caratteri per lato
+    printf("%.*s-+-%.*s-+-%.*s\n",
+        COL_WIDTH, "------------------------------------------------------------",
+        COL_WIDTH, "------------------------------------------------------------",
+        COL_WIDTH, "------------------------------------------------------------");
+
+    for(int r = 0; r < righe; r++){
+        char cella_todo[COL_WIDTH + 5], cella_doing[COL_WIDTH + 5], cella_done[COL_WIDTH + 5];
+        formatta_cella(cella_todo,  sizeof(cella_todo),  r < n_todo  ? todo[r]  : NULL);
+        formatta_cella(cella_doing, sizeof(cella_doing), r < n_doing ? doing[r] : NULL);
+        formatta_cella(cella_done,  sizeof(cella_done),  r < n_done  ? done[r]  : NULL);
+
+        // "%-*.*s" = allinea a sinistra e taglia il testo a COL_WIDTH caratteri,
+        // così le colonne restano allineate anche se il testo di una card è più lungo delle altre
+        printf("%-*.*s | %-*.*s | %-*.*s\n",
+            COL_WIDTH, COL_WIDTH, cella_todo,
+            COL_WIDTH, COL_WIDTH, cella_doing,
+            COL_WIDTH, COL_WIDTH, cella_done);
+    }
+    printf("\n");
+
+    return;
+}
+
 // ricevuta una richiesta di review manda all'utente che l'ha richiesto un ack
 void review_card_handler(int socket_utente, int ID, char* testo){
     printf("richiesta di review per la card %d (%s) \n", ID, testo);
@@ -255,10 +320,30 @@ void review_card_handler(int socket_utente, int ID, char* testo){
 // riceve la lista utenti aggiornata: si connette a chi non conosce ancora e
 // manda a tutti i connessi la richiesta di review per la card corrente
 void send_user_list_handler(char* lista){
-    char *porte[MAX_UTENTI];
-    int n_porte = parse_msg(porte, lista, MAX_UTENTI, ",");
-    for(int i = 0; i < n_porte; i++){
-        connect_to_user(atoi(porte[i]));
+
+    // "-" e' il placeholder per "nessun altro utente", altrimenti il campo
+    // vuoto nel messaggio verrebbe collassato dal parsing lato lavagna
+    if(strcmp(lista, "-") != 0){
+        char *porte[MAX_UTENTI];
+        int n_porte = parse_msg(porte, lista, MAX_UTENTI, ",");
+        for(int i = 0; i < n_porte; i++){
+            connect_to_user(atoi(porte[i]));
+        }
+    }
+
+    // se non ho nessun peer attivo (nessuno con cui fare la review, o tutti
+    // disconnessi) non posso aspettare all'infinito: completo comunque la card
+    int peer_attivi = 0;
+    for(int i = 0; i < MAX_UTENTI; i++){
+        if(utenti[i].attivo){
+            peer_attivi++;
+        }
+    }
+
+    if(peer_attivi == 0){
+        printf("nessun altro utente disponibile per la review: completo comunque la card %d \n", curr_card.ID);
+        reviewed = 1;
+        return;
     }
 
     memset(BUFFER_OUT,0,DIM_BUFFER);
@@ -270,6 +355,26 @@ void send_user_list_handler(char* lista){
         }
         invia_msg(utenti[i].socket, BUFFER_OUT);
     }
+
+    in_review = 1;
+    time(&review_iniziata);
+
+    return;
+}
+
+// rimanda REVIEW_CARD a chi non ha ancora risposto, nel caso l'ack si sia perso
+void ritenta_review(){
+    memset(BUFFER_OUT,0,DIM_BUFFER);
+    sprintf(BUFFER_OUT,"REVIEW_CARD|%d|%s",curr_card.ID,curr_card.testo);
+
+    for(int i = 0; i < MAX_UTENTI; i++){
+        if(utenti[i].attivo == 0 || utenti[i].review_ack == 1){
+            continue;
+        }
+        invia_msg(utenti[i].socket, BUFFER_OUT);
+    }
+
+    time(&review_iniziata);
 
     return;
 }
@@ -285,6 +390,7 @@ void review_ack_handler(int socket_utente, int ID){
         printf("errore logico: REVIEW_ACK da un socket non registrato: %d \n", socket_utente);
         return;
     }
+
     utenti[i].review_ack = 1;
 
     int tutti_pronti = 1;
@@ -296,6 +402,7 @@ void review_ack_handler(int socket_utente, int ID){
     }
 
     if(tutti_pronti){
+        printf("ho ricevuto tutte le review positive mando CARD_DONE alla lavagna\n");
         reviewed = 1;
     }
 
@@ -312,6 +419,19 @@ void pong_handler(){
     return;
 }
 
+// disconnessione volontaria, richiamata da tastiera: avviso la lavagna e chiudo
+void quit_handler(){
+    memset(BUFFER_OUT,0,DIM_BUFFER);
+    sprintf(BUFFER_OUT,"QUIT");
+    invia_msg(socket_lavagna,BUFFER_OUT);
+
+    close(socket_lavagna);
+    close(socket_P2P);
+
+    printf("disconnesso dalla lavagna, chiudo il client \n");
+    exit(0);
+}
+
 // inizializza la card se ID = -1 altrimenti aggiorna la struttura current card
 void card_handler(int ID, char* testo, char* porte_utenti, int utenti_lav){
     if (ID == -1){
@@ -323,12 +443,15 @@ void card_handler(int ID, char* testo, char* porte_utenti, int utenti_lav){
         curr_card.testo[DIM_TESTO - 1] = '\0';
 
         // ottengo le porte degli utenti passati nel formato del messaggio
-        char *porte[MAX_UTENTI];
-        int n_porte = parse_msg(porte, porte_utenti, MAX_UTENTI, ",");
+        // "-" e' il placeholder per "nessun altro utente"
+        if(strcmp(porte_utenti, "-") != 0){
+            char *porte[MAX_UTENTI];
+            int n_porte = parse_msg(porte, porte_utenti, MAX_UTENTI, ",");
 
-        for(int i = 0; i < n_porte; i++){
-            int porta = atoi(porte[i]);
-            connect_to_user(porta);
+            for(int i = 0; i < n_porte; i++){
+                int porta = atoi(porte[i]);
+                connect_to_user(porta);
+            }
         }
         // mando l'ack alla lavagna
         memset(BUFFER_OUT,0,DIM_BUFFER);
@@ -373,14 +496,31 @@ void call_handler(int socket_utente, char *campo[MAX_CAMPI], int n_campi){
         send_user_list_handler(campo[1]);
     }
 
+    else if (socket_utente == socket_lavagna && strcmp(campo[0],"SHOW_LAVAGNA_DATA") == 0 && n_campi == 4){
+        show_lavagna_data_handler(campo[1], campo[2], campo[3]);
+    }
+
     else if (strcmp(campo[0],"REVIEW_ACK") == 0 && n_campi == 2){
         review_ack_handler(socket_utente, atoi(campo[1]));
     }
-    /*
-    if(strcmp(campo[0],"HELLO") == 0 && n_campi == 2){
-        hello_handler(socket_utente,campo[1]);
-    } 
-    */
+
+    else if (socket_utente == STDIN_FILENO && strcmp(campo[0],"QUIT") == 0 && n_campi == 1){
+        quit_handler();
+    }
+
+    else if (socket_utente == STDIN_FILENO && strcmp(campo[0],"SHOW_LAVAGNA") == 0 && n_campi == 1){
+        // inoltro il comando alla lavagna, che stampa la board sul suo terminale
+        memset(BUFFER_OUT,0,DIM_BUFFER);
+        sprintf(BUFFER_OUT,"SHOW_LAVAGNA");
+        invia_msg(socket_lavagna,BUFFER_OUT);
+    }
+
+    else if (socket_utente == STDIN_FILENO && strcmp(campo[0],"CREATE_CARD") == 0 && n_campi == 4){
+        // inoltro il comando alla lavagna così com'è, la creazione la fa lei
+        memset(BUFFER_OUT,0,DIM_BUFFER);
+        snprintf(BUFFER_OUT,DIM_BUFFER,"CREATE_CARD|%s|%s|%s",campo[1],campo[2],campo[3]);
+        invia_msg(socket_lavagna,BUFFER_OUT);
+    }
 
     // se nessun comando ha rispettato il formato comunico al client l'errore
     else {
@@ -498,6 +638,9 @@ int main(int argc, char* argv[]){
         // di review, indipendentemente dal fatto che sia arrivato un messaggio o no
         if(card_done){
             card_done = 0;
+            printf("la card è pronta chiedo la lista degli utenti per la review \n");
+            in_review = 1;
+            time(&review_iniziata);
             memset(BUFFER_OUT,0,DIM_BUFFER);
             sprintf(BUFFER_OUT,"REQUEST_USER_LIST");
             invia_msg(socket_lavagna,BUFFER_OUT);
@@ -505,6 +648,7 @@ int main(int argc, char* argv[]){
 
         if(reviewed){
             reviewed = 0;
+            in_review = 0;
             memset(BUFFER_OUT,0,DIM_BUFFER);
             sprintf(BUFFER_OUT,"CARD_DONE|%d",curr_card.ID);
             invia_msg(socket_lavagna,BUFFER_OUT);
@@ -513,11 +657,19 @@ int main(int argc, char* argv[]){
             }
         }
 
+        if(in_review && (time(NULL) - review_iniziata >= 5)){
+            ritenta_review();
+        }
+
         if(n_pronti <= 0){
             continue;
         }
 
         for(int i = 0; i <= max_fd; i++){
+            if(!FD_ISSET(i, &fd_lettura)){
+                continue;
+            }
+
             if(i == socket_P2P){
                 // mi è arrivata una richiesta di connessione da un utente
                 struct sockaddr_in ind_utente;
@@ -548,10 +700,10 @@ int main(int argc, char* argv[]){
 
             else if (i == STDIN_FILENO){
 
-                // ho rilvato una riga dal terminale 
+                // ho rilvato una riga dal terminale
                 memset(BUFFER_IN,0,DIM_BUFFER);
                 fgets(BUFFER_IN,DIM_BUFFER,stdin);
-                // tolgo il ritorno carrello presente nella riga di comando 
+                // tolgo il ritorno carrello presente nella riga di comando
                 BUFFER_IN[strcspn(BUFFER_IN, "\n")] = '\0';
                 printf("riga letta: %s \n",BUFFER_IN);
                 char *campi[MAX_CAMPI];
@@ -585,8 +737,6 @@ int main(int argc, char* argv[]){
                 call_handler(i,campi,n_campi);
             }
         }
-
-        //gestisco i ritorni P2P
 
     }   
     return 0;

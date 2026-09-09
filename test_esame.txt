@@ -1,0 +1,85 @@
+=== LISTA TEST MANUALI PER LA DEMO ALL'ESAME ===
+(seguire in ordine, ogni test presuppone i precedenti)
+
+--- 0. PRIMA DI TUTTO ---
+gcc -Wall -o lavagna lavagna.c
+gcc -Wall -pthread -o utente utente.c
+-> nessun warning, nessun errore (requisito bloccante da specifica)
+
+--- 1. AVVIO LAVAGNA ---
+Terminale 1: ./lavagna
+Atteso: board disegnata subito, 15 card tutte in TO_DO, messaggio con le
+        operazioni disponibili da tastiera.
+
+--- 2. REGISTRAZIONE E ASSEGNAZIONE AUTOMATICA (requisito: almeno 4 utenti) ---
+Terminale 2: ./utente 5679
+Terminale 3: ./utente 5680
+Terminale 4: ./utente 5681
+Terminale 5: ./utente 5682
+Atteso sul terminale della lavagna: per ognuno, "Registrato utente con porta: ..."
+        seguito da "Assegnata la card con ID: ..." e "invio della card... successo".
+        Ogni utente riceve una card diversa, in ordine di porta.
+
+--- 3. CICLO AUTOMATICO COMPLETO (ack -> lavoro -> review -> done) ---
+Aspettare ~15 secondi senza fare nulla.
+Atteso: la board si aggiorna da sola, le 4 card assegnate passano
+        HANDLED -> DOING (subito, dopo l'ACK_CARD) -> DONE (dopo review).
+        Nessun input manuale richiesto: dimostra tutto il flusso "matricola dispari".
+
+--- 4. RIASSEGNAZIONE AUTOMATICA DOPO COMPLETAMENTO ---
+Continuare ad aspettare (o digitare SHOW_LAVAGNA ogni tanto sulla lavagna).
+Atteso: appena un utente finisce una card, gliene arriva subito un'altra,
+        finché le card non finiscono ("Le card sono finite..." quando succede).
+
+--- 5. COMANDI DA TASTIERA SULLA LAVAGNA ---
+Terminale lavagna, digitare:
+  SHOW_LAVAGNA
+    -> ristampa la board con lo stato corrente
+  CREATE_CARD|50|1|Nuova attivita di test
+    -> "Creata nuova card: ID = 50..." e compare in TO_DO
+       (NB: la colonna va data come NUMERO: 1=TO_DO, 2=DOING, 3=DONE)
+  SEND_USER_LIST
+    -> stampa a video la lista delle porte registrate
+  HANDLE_CARD
+    -> forza un giro di assegnazione manuale (utile se ci sono utenti liberi
+       e card disponibili ma non e' scattato in automatico)
+
+--- 6. QUIT PULITO DA UN UTENTE ---
+Su uno dei terminali utente (es. 5682), digitare: QUIT
+Atteso: quel client manda QUIT alla lavagna e chiude da solo.
+        Sul terminale lavagna: la porta viene rimossa, contatore utenti
+        decrementato, eventuale card in DOING dell'utente torna in TO_DO
+        e viene riassegnata se c'e' qualcuno libero.
+        Sugli ALTRI terminali utente ancora connessi: nessun messaggio di
+        errore (il fix piu' recente evita il falso "comando non valido"
+        quando un peer si disconnette).
+
+--- 7. DISCONNESSIONE BRUSCA (Ctrl+C su un utente, senza QUIT) ---
+Su un altro terminale utente, premere Ctrl+C (kill del processo, non QUIT pulito).
+Atteso sulla lavagna: "chiusura della connessione forzata senza quit",
+        stessa gestione del punto 6 (card liberata e riassegnata se in DOING).
+
+--- 8. CHIUSURA DELLA LAVAGNA ---
+Terminale lavagna, digitare: CLOSE
+Atteso: "lavagna chiusa", il processo termina. Gli utenti ancora connessi
+        vedranno cadere la connessione (non c'e' un avviso esplicito, solo
+        la disconnessione — dirlo se il professore chiede).
+
+--- 9. OPZIONALE, RICHIEDE TEMPO: PING_USER / timeout ---
+Con una card in DOING, aspettare piu' di 1:30 min senza toccare nulla:
+        la lavagna manda un ping (sul terminale utente, "PONG" inviato in automatico).
+Se invece si vuole mostrare il timeout (utente che NON risponde): bloccare
+        il processo utente con Ctrl+Z (non killarlo, solo sospenderlo) prima
+        del ping, aspettare 1:30+30 secondi: la card torna in TO_DO.
+        ATTENZIONE: il comando e' ancora chiamato "PING"/"PONG" nel codice,
+        non "PING_USER"/"PONG_LAVAGNA" come da specifica — se viene chiesto,
+        ammetterlo e spiegare che il meccanismo funziona, solo il nome del
+        comando non e' allineato.
+
+=== COSE DA NON FARE IN DEMO (bug noti, non ancora risolti) ===
+- non testare la disconnessione di un utente PRIMA che mandi l'ACK_CARD
+  (finestra di pochi millisecondi, difficile da centrare comunque): la card
+  resta bloccata in HANDLED per sempre, rimuovi_card_utente() controlla solo
+  lo stato DOING
+- CREATE_CARD/QUIT non sono digitabili dal terminale di un UTENTE (solo QUIT
+  lo e', aggiunto di recente); SHOW_LAVAGNA/CREATE_CARD restano solo lato lavagna

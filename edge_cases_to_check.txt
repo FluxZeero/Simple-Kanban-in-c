@@ -11,3 +11,75 @@ OK  - Server ancora reattivo dopo tutto lo stress
 
 === Registrazione in ordine NON crescente (5685, 5679, 5682) ===
 === CREATE_CARD con '|' dentro il testo, poi un nuovo utente che triggera handle_card ===
+
+=== TEST INTENSIVI SUL FLUSSO COMPLETO (lavagna + utente, review inclusa) ===
+
+BUG TROVATI E RISOLTI:
+
+1. [CRITICO] utente.c: nel loop principale del main() mancava il controllo
+   FD_ISSET(i, &fd_lettura) prima di processare ogni fd. Il ciclo leggeva ogni
+   fd da 0 a max_fd ad ogni giro, indipendentemente da cosa avesse detto
+   select(): in pratica il programma restava bloccato su fgets(stdin) finché
+   non arrivava un input da tastiera, e non poteva MAI reagire da solo a un
+   messaggio di rete (HANDLE_CARD, PING, REVIEW_CARD...). Senza questo fix
+   l'intero flusso automatico previsto dalla consegna (sleep -> REQUEST_USER_LIST
+   -> review -> CARD_DONE) non può funzionare senza tenere la tastiera "sveglia".
+   FIX: aggiunto `if(!FD_ISSET(i,&fd_lettura)) continue;` in cima al for.
+
+2. lavagna.c: nel messaggio HANDLE_CARD/SEND_USER_LIST, se non ci sono altri
+   utenti registrati il campo delle porte resta vuoto -> due '|' consecutivi
+   -> parse_msg (basato su strtok) collassa il campo vuoto -> n_campi sfasato
+   di uno -> il messaggio viene scartato come "comando non valido" e il primo
+   utente non riceve mai l'ACK. FIX: placeholder "-" quando la lista è vuota,
+   riconosciuto sia in card_handler che in send_user_list_handler lato utente.
+
+3. lavagna.c: user_list_handler includeva anche la porta di chi aveva fatto
+   la richiesta -> un utente avrebbe provato a connettersi P2P a se stesso.
+   FIX: il richiedente viene escluso dalla lista che riceve indietro.
+
+4. lavagna.c: dopo CARD_DONE non veniva mai richiamato handle_card(), quindi
+   un utente che finiva una card non ne riceveva mai una nuova, anche se ce
+   n'erano ancora disponibili (la consegna lo richiede esplicitamente: "ripetuta
+   ogni volta che un utente ha terminato una card"). Il controllo "utente già
+   assegnato" andava aggiustato di pari passo: contava come "occupato" anche
+   chi aveva solo una card ormai DONE. FIX: handle_card() richiamata anche per
+   dst==DONE, check "già assegnata" ristretto a stato HANDLED/DOING.
+
+Considerati fuori scope per la demo a lezione (aperti manualmente 2-3
+terminali, non servono a passare test automatici da riga di comando) e
+quindi NON applicati / rimossi dopo prima prova:
+- controllo EOF su stdin in utente.c (serviva solo quando stdin è /dev/null
+  o una pipe, mai con un terminale vero)
+- SO_REUSEADDR sul socket P2P di utente.c (serve solo per riavviare lo
+  stesso processo sulla stessa porta a distanza di pochi secondi)
+
+VERIFICATO FUNZIONANTE END-TO-END (con log reali, zero errori):
+- OK - 2 utenti: HELLO -> HANDLE_CARD -> ACK_CARD -> sleep -> REQUEST_USER_LIST
+       -> SEND_USER_LIST -> connessione P2P -> REVIEW_CARD scambiato in
+       entrambe le direzioni -> REVIEW_ACK -> CARD_DONE -> card in DONE
+- OK - 4 utenti, tutte le 15 card iniziali, su più round di riassegnazione
+       consecutivi dopo ogni CARD_DONE -> tutte finite in DONE
+- OK - CREATE_CARD inviato via socket grezzo (netcat), non da terminale
+- OK - comandi malformati / riga vuota / HELLO senza porta: mai un crash,
+       sempre "comando non valido"
+- OK - disconnessione di un client mai registrato (HELLO mai mandato): nessun
+       crash, decremento contatori corretto
+- OK - disconnessione dopo che la card è già DONE: nessuno stato inconsistente
+
+NON TESTATO IN QUESTO GIRO (limite del test, non del codice):
+- disconnessione/QUIT con card in DOING: il meccanismo non è cambiato dai
+  test precedenti (già validato prima), solo non ri-testato live stavolta
+  per via della latenza tra i comandi di test, più lenta dello sleep(10)
+  interno al programma
+
+BUG NOTI, ANCORA APERTI (non toccati in questo giro):
+- card in stato HANDLED (assegnata, ACK non ancora arrivato) mai liberata se
+  l'utente si disconnette prima di mandare l'ACK: rimuovi_card_utente()
+  controlla solo lo stato DOING
+- nessun timeout su card HANDLED non confermate (stesso motivo, ping_user()
+  pinga solo le DOING)
+- comandi PING/PONG mandati come "PING"/"PONG" invece dei nomi da specifica
+  PING_USER/PONG_LAVAGNA
+- utente.c non supporta nessun comando da riga di comando (QUIT compreso:
+  un utente non ha modo di disconnettersi "pulito", solo di chiudere il
+  processo)
