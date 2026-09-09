@@ -24,7 +24,6 @@ typedef struct {
     char testo[DIM_TESTO];
     int porta_utente; // -1 = non assegnata a nessun utente
     int stato; // -1 non valid 
-    int acked; 
     time_t timestamp;
 } struct_card;
 
@@ -40,7 +39,6 @@ char BUFFER_OUT[DIM_BUFFER];
 int utenti_attivi = 0;
 int utenti_registrati = 0;
 int numero_card = 0;
-int assigned_card = 0;
 
 fd_set fd_lettura; //selezine degli utenti da cui mi aspetto di leggere
 fd_set fd_temp; // temporaneo, utilizzato per salvare il contenuto di fd_lettura prima dell'uso di select
@@ -93,7 +91,6 @@ void init_cards(){
         strcpy(cards[i].testo,testi_iniziali[i]);
         cards[i].testo[DIM_TESTO - 1] = '\0';
         time(&cards[i].timestamp);
-        cards[i].acked = 0;
         numero_card ++;
     }
     
@@ -156,7 +153,7 @@ void sort_utenti(){
 
 // separa il buffer src, di numero masssimo di campi dim, in dst, utilizzando come separatore sep
 int parse_msg(char *dst[],char *src, int numero, char* sep){
-    
+
     int n_campi = 0;
     char *token = strtok(src, sep);
     while(token != NULL && n_campi < numero){
@@ -166,6 +163,16 @@ int parse_msg(char *dst[],char *src, int numero, char* sep){
     }
 
     return n_campi;
+}
+
+// manda il messaggio sul socket aggiungendo il terminatore di fine messaggio ('\n'),
+// che definisce il confine tra un messaggio e il successivo sullo stream TCP
+// ritorna 1 se l'invio è completo, 0 in caso di errore o invio parziale
+int invia_msg(int socket, char* messaggio){
+    char buffer[DIM_BUFFER];
+    int len = snprintf(buffer, DIM_BUFFER, "%s\n", messaggio);
+    int n = send(socket, buffer, len, 0);
+    return (n == len);
 }
 
 /* costruisce in dest la riga r di una colonna larga COL_WIDTH:
@@ -238,6 +245,7 @@ void create_card_handler(int ID, int colonna, char* testo, int dim_testo){
         return;
     }
 
+    //  tronco il messaggio se troppo lungo
     if (dim_testo > DIM_TESTO - 1){
         dim_testo = DIM_TESTO - 1;
     }
@@ -312,10 +320,6 @@ void move_card(int ID, int src, int dst, int porta){
         cards[i].porta_utente = porta;
     }
 
-    if(src == HANDLED && dst == TO_DO){
-        cards[i].acked = 1;
-    }
-
 
     return;
 
@@ -386,14 +390,10 @@ void handle_card(){
 
         offset += sprintf(BUFFER_OUT + offset,"|%d",utenti_registrati);
 
-        int n = send(utenti[i].socket, BUFFER_OUT,strlen(BUFFER_OUT),0);
-
-        if (n < offset){
-            printf("inviata la card con ID:%d, ma il messaggio finale è stato tagliato \n",cards[k].id);
-        } else if (n == -1){
-            printf("ERRORE: invio della card non riuscito \n");
-        } else {
+        if(invia_msg(utenti[i].socket, BUFFER_OUT)){
             printf("invio della card con ID: %d avvenuto con successo \n",cards[k].id);
+        } else {
+            printf("ERRORE: invio della card con ID:%d non riuscito o incompleto \n",cards[k].id);
         }
 
     }
@@ -469,9 +469,15 @@ void show_lavagna(){
 
     // una riga vuota di apertura piu' 3 righe per ogni card, con un'altezza minima fissa
     int righe = RIGHE_LAVAGNA;
-    if(1 + n_todo * 3 > righe)  righe = 1 + n_todo * 3;
-    if(1 + n_doing * 3 > righe) righe = 1 + n_doing * 3;
-    if(1 + n_done * 3 > righe)  righe = 1 + n_done * 3;
+    if(1 + n_todo * 3 > righe){
+        righe = 1 + n_todo * 3;
+    }  
+    if(1 + n_doing * 3 > righe){
+        righe = 1 + n_doing * 3;
+    }
+    if(1 + n_done * 3 > righe){
+        righe = 1 + n_done * 3;
+    }  
 
     printf("\n    _____________________________________________________________________________________________\n");
     printf("   /                                                                                            /|\n");
@@ -503,36 +509,37 @@ void show_lavagna(){
 
 // manda la lista delle porte all'utente identificato con socket
 void user_list_handler(int socket){
-    
-    // preparo il messaggio
-    memset(BUFFER_OUT,0,DIM_BUFFER);
+
+    // preparo la lista delle porte (ogni porta al massimo "65535,", 6 caratteri)
+    char lista_porte[MAX_UTENTI * 6 + 1];
     int offset = 0;
+    lista_porte[0] = '\0';
 
     for(int i = 0; i < MAX_UTENTI; i++){
         if(utenti[i].porta == 0){
             continue;
         }
 
-        offset += sprintf(BUFFER_OUT + offset,"%d,",utenti[i].porta);
+        offset += sprintf(lista_porte + offset,"%d,",utenti[i].porta);
     }
 
     if(offset > 0){
-        BUFFER_OUT[offset - 1] = '\0';
+        lista_porte[offset - 1] = '\0';
     }
 
     if(socket == STDIN_FILENO){
-        printf("Lista utenti: %s \n",BUFFER_OUT);
+        printf("Lista utenti: %s \n",lista_porte);
         return;
     }
 
-    // invio il messaggio
-    int size = strlen(BUFFER_OUT);
-    int n = send(socket,BUFFER_OUT,size,0);
+    // invio il messaggio, con nome del comando e numero di utenti registrati
+    memset(BUFFER_OUT,0,DIM_BUFFER);
+    snprintf(BUFFER_OUT,DIM_BUFFER,"SEND_USER_LIST|%s|%d",lista_porte,utenti_registrati);
 
-    if (n < 0){
-        printf("errore nell'invio del messaggio nella richiesta: user_list_handler \n");
-    } else {
+    if(invia_msg(socket, BUFFER_OUT)){
         printf("inviate le porte degli utenti al socket: %d",socket);
+    } else {
+        printf("errore nell'invio del messaggio nella richiesta: user_list_handler \n");
     }
 
     return;
@@ -570,7 +577,7 @@ void ping_user(){
         if(adesso - cards[i].timestamp >= 90){
             memset(BUFFER_OUT,0,DIM_BUFFER);
             sprintf(BUFFER_OUT,"PING");
-            send(utenti[k].socket, BUFFER_OUT, strlen(BUFFER_OUT), 0);
+            invia_msg(utenti[k].socket, BUFFER_OUT);
             utenti[k].ping_timeout_counter = adesso;
         }
     }
@@ -613,7 +620,7 @@ void call_handler(int socket_utente, char *campo[MAX_CAMPI], int n_campi){
         handle_card();
     }
 
-    else if (strcmp(campo[0],"SEND_USER_LIST") == 0){
+    else if (strcmp(campo[0],"SEND_USER_LIST") == 0 || strcmp(campo[0],"REQUEST_USER_LIST") == 0){
         user_list_handler(socket_utente);
     }
 
@@ -774,22 +781,30 @@ int main(){
                 else {
                     memset(BUFFER_IN,0,DIM_BUFFER);
                     int n = recv(i,BUFFER_IN,DIM_BUFFER - 1,0);
+
+                    if (n < 0) {
+                        printf("errore nella richiesta da parte del socket %d",i);
+                        continue;
+                    }
+
                     BUFFER_IN[n] = '\0';
+
                     if(n == 0){
                         // chiusura della connessione forzata senza quit
                         quit_handler(i);
-                    } 
-
-                    else if (n < 0) {
-                        printf("errore nella richiesta da parte del socket %d",i);
-                        continue;
-                    } 
+                    }
 
                     else if (n > MAX_MSG){
                         printf("il testo del messaggio è troppo lungo");
                     }
-                    
+
                     else {
+                        // tolgo il terminatore di fine messaggio prima del parsing
+                        char *fine = strchr(BUFFER_IN, '\n');
+                        if(fine != NULL){
+                            *fine = '\0';
+                        }
+
                         // servo la richiesta: utilizzo una funzione per chiamare il giusto handler in base al messaggio ricevuto
 
                         char *campo[MAX_CAMPI];
