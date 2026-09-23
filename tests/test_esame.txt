@@ -2,9 +2,9 @@
 (seguire in ordine, ogni test presuppone i precedenti)
 
 --- 0. PRIMA DI TUTTO ---
-gcc -Wall -o lavagna lavagna.c
-gcc -Wall -pthread -o utente utente.c
+make
 -> nessun warning, nessun errore (requisito bloccante da specifica)
+   (compila entrambi i binari lavagna e utente a partire dai sorgenti in src/)
 
 --- 1. AVVIO LAVAGNA ---
 Terminale 1: ./lavagna
