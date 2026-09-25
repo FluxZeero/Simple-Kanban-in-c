@@ -1,5 +1,1 @@
-build/
-lavagna
-utente
-a.out
-*.o
+objects
